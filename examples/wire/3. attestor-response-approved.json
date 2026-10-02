@@ -1,0 +1,36 @@
+{
+  "protocol_version": "0.1",
+  "request_id": "01J9DOSRDEMO00000000000001",
+  "result": {
+    "approved": true,
+    "summary": "No policy-blocking issues were found in the proposed transition."
+  },
+  "evidence": {
+    "canonical_request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "model_response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "attestation": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "chain_id": 31337,
+    "verifying_contract": "0x4444444444444444444444444444444444444444",
+    "policy_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parent_git_oid": "sha1:1111111111111111111111111111111111111111",
+    "candidate_git_oid": "sha1:2222222222222222222222222222222222222222",
+    "bundle_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bundle_cid": "bafybeigdyrzt-example-cid-replace-with-real-value",
+    "provider": "mock",
+    "model": "deterministic-reviewer-v1",
+    "model_version": "1",
+    "approved": true,
+    "request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "issued_at": 1790960400,
+    "expires_at": 1790964000,
+    "attestor_key_id": "local-dev-attestor-1"
+  },
+  "signature": {
+    "scheme": "eip712-secp256k1",
+    "signer": "0x1111111111111111111111111111111111111111",
+    "value": "0x<65-byte-signature>"
+  }
+}

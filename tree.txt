@@ -1,0 +1,26 @@
+dosr/
+├── apps/
+│   └── client/                  # DOSR CLI / user-facing application
+├── services/
+│   └── attestor/                # Trusted attestation + LLM service
+├── contracts/                   # Solidity/EVM contracts
+├── packages/
+│   ├── protocol/                # Shared schemas + canonicalization
+│   ├── git-storage/             # Git bundle/object + IPFS adapters
+│   ├── chain/                   # EVM RPC/client helpers
+│   └── crypto/                  # hashes, EIP-712, signatures
+├── examples/
+│   ├── repos/
+│   │   ├── hello-python/.dosr/policy.json
+│   │   └── strict-demo/.dosr/policy.json
+│   └── wire/                    # request/response/on-chain examples
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+├── fixtures/
+│   ├── git/
+│   └── attestations/
+├── docs/
+├── scripts/
+└── infra/

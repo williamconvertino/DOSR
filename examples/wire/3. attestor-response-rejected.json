@@ -1,0 +1,26 @@
+{
+  "protocol_version": "0.1",
+  "request_id": "01J9DOSRDEMO00000000000001",
+  "result": {
+    "approved": false,
+    "summary": "The review found a policy-blocking issue."
+  },
+  "evidence": {
+    "canonical_request_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "model_response_hash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "attestation": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "parent_git_oid": "sha1:1111111111111111111111111111111111111111",
+    "candidate_git_oid": "sha1:2222222222222222222222222222222222222222",
+    "approved": false,
+    "request_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "response_hash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "attestor_key_id": "local-dev-attestor-1"
+  },
+  "signature": {
+    "scheme": "eip712-secp256k1",
+    "signer": "0x1111111111111111111111111111111111111111",
+    "value": "0x<65-byte-signature>"
+  }
+}

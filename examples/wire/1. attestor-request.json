@@ -1,0 +1,27 @@
+{
+  "protocol_version": "0.1",
+  "request_id": "01J9DOSRDEMO00000000000001",
+  "repository": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "chain_id": 31337,
+    "contract": "0x4444444444444444444444444444444444444444",
+    "policy_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "transition": {
+    "parent_git_oid": "sha1:1111111111111111111111111111111111111111",
+    "candidate_git_oid": "sha1:2222222222222222222222222222222222222222",
+    "bundle": {
+      "format": "git-bundle-v1",
+      "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ipfs_cid": "bafybeigdyrzt-example-cid-replace-with-real-value"
+    }
+  },
+  "review": {
+    "provider": "mock",
+    "model": "deterministic-reviewer-v1",
+    "model_version": "1"
+  },
+  "client": {
+    "client_version": "0.1.0"
+  }
+}

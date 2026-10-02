@@ -1,0 +1,13 @@
+{
+  "method": "acceptTransition",
+  "arguments": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "parent_git_oid_digest": "0x1111111111111111111111111111111111111111000000000000000000000000",
+    "candidate_git_oid_digest": "0x2222222222222222222222222222222222222222000000000000000000000000",
+    "policy_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "attestation_hash": "0x9999999999999999999999999999999999999999999999999999999999999999",
+    "attestation": "<ABI-encoded typed attestation>",
+    "signature": "0x<65-byte-signature>",
+    "git_object_format": "sha1"
+  }
+}

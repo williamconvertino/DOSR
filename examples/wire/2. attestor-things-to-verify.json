@@ -1,0 +1,73 @@
+{
+  "protocol_version": "0.1",
+  "request_id": "01J9DOSRDEMO00000000000001",
+
+  "repository": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "chain_id": 31337,
+    "verifying_contract": "0x4444444444444444444444444444444444444444",
+
+    "canonical_head": "sha1:1111111111111111111111111111111111111111",
+
+    "policy_hash_on_chain": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "policy_hash_computed": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+
+  "proposal": {
+    "candidate_git_oid": "sha1:2222222222222222222222222222222222222222",
+    "candidate_parent_git_oid": "sha1:1111111111111111111111111111111111111111",
+
+    "bundle_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bundle_cid": "bafybeigdyrzt-example-cid-replace-with-real-value"
+  },
+
+  "policy": {
+    "provider": "mock",
+    "model": "deterministic-reviewer-v1",
+    "model_version": "1",
+    "prompt_template": "standard-code-review-v1",
+    "decision_schema": "dosr-review-decision-v1"
+  },
+
+  "checks": {
+    "repository_exists": true,
+
+    "policy_hash_matches": true,
+
+    "candidate_commit_exists": true,
+
+    "candidate_parent_matches_declared_parent": true,
+
+    "candidate_parent_matches_canonical_head": true,
+
+    "bundle_hash_matches": true,
+
+    "bundle_contains_candidate_commit": true,
+
+    "provider_is_approved": true,
+
+    "model_is_approved": true,
+
+    "model_version_is_approved": true,
+
+    "review_format_is_valid": true,
+
+    "prompt_template_is_approved": true,
+
+    "request_within_policy_limits": true
+  },
+
+  "derived_review_input": {
+    "changed_files": [
+      "src/example.py",
+      "tests/test_example.py"
+    ],
+
+    "changed_file_count": 2,
+    "patch_bytes": 4812,
+
+    "review_request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+
+  "ready_for_llm": true
+}
