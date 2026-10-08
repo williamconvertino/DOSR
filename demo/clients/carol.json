@@ -1,0 +1,7 @@
+{
+  "name": "Carol",
+  "email": "carol@dosr.demo",
+  "description": "Honest contributor who pins the approved mock model explicitly",
+  "review_model": { "provider": "mock", "model": "deterministic-reviewer-v1", "version": "1" },
+  "color": "#ae3ec9"
+}

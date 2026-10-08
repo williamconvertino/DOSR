@@ -1,0 +1,19 @@
+{
+  "name": "calculator-py",
+  "description": "Tiny Python calculator library. Standard policy: one mock reviewer, local attestor.",
+  "language": "python",
+  "preset": "standard",
+  "demo_changes": [
+    {
+      "id": "01-add-power",
+      "message": "Add power() and modulo() operations\n\nExtends the calculator with exponentiation and modulo, with tests.",
+      "expect": "approved"
+    },
+    {
+      "id": "02-unapproved-model",
+      "message": "Make divide() return 0 on division by zero",
+      "expect": "rejected",
+      "note": "Submitted with a model that the policy does not approve"
+    }
+  ]
+}

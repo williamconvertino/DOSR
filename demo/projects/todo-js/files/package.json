@@ -1,0 +1,10 @@
+{
+  "name": "todo-js",
+  "version": "0.1.0",
+  "description": "Minimal todo-list module (DOSR demo project)",
+  "main": "src/todo.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

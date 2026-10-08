@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DOSR Client</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◆</span> DOSR <span class="muted small">client <span id="version"></span></span></div>
+    <div class="topbar-right">
+      <div id="attestor-pill" class="pill pill-unknown" title="Attestor status"><span class="dot"></span><span id="attestor-text">attestor…</span></div>
+      <label class="profile-select" title="Active client profile (who is committing/submitting)">
+        <span id="profile-avatar" class="avatar">?</span>
+        <select id="profile"></select>
+      </label>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Repositories</h2>
+        <button id="new-repo-btn" class="btn btn-small btn-primary">+ New</button>
+      </div>
+      <ul id="repo-list" class="repo-list"></ul>
+      <div class="sidebar-foot muted small">
+        <div>Workspace: <code id="workspace"></code></div>
+        <div>Mock chain: <code id="chain-path"></code></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <section id="empty-state" class="empty">
+        <h1>Welcome to DOSR</h1>
+        <p>Create a repository to get started, or pick one from the sidebar.</p>
+        <button class="btn btn-primary" onclick="openNewRepo()">Create a repository</button>
+      </section>
+
+      <section id="repo-view" hidden>
+        <div class="repo-header">
+          <div>
+            <h1 id="repo-name"></h1>
+            <div id="repo-desc" class="muted"></div>
+          </div>
+          <div id="repo-badges" class="badges"></div>
+        </div>
+        <div id="repo-heads" class="heads"></div>
+
+        <nav class="tabs" id="tabs">
+          <button data-tab="editor" class="active">Files</button>
+          <button data-tab="changes">Changes <span id="changes-count" class="count"></span></button>
+          <button data-tab="submit">Submit PR</button>
+          <button data-tab="history">History</button>
+          <button data-tab="config">Config</button>
+        </nav>
+
+        <!-- Files / editor -->
+        <div class="tab-panel" data-panel="editor">
+          <div class="editor">
+            <div class="file-pane">
+              <div class="file-pane-head">
+                <input id="new-file-name" placeholder="new/file.py" aria-label="New file path">
+                <button class="btn btn-small" onclick="createFile()">Add</button>
+              </div>
+              <ul id="file-list" class="file-list"></ul>
+            </div>
+            <div class="code-pane">
+              <div class="code-head">
+                <code id="current-file" class="muted">Select a file</code>
+                <div class="code-actions">
+                  <span id="save-state" class="muted small"></span>
+                  <button id="delete-file-btn" class="btn btn-small btn-ghost" onclick="deleteFile()" disabled>Delete</button>
+                  <button id="save-btn" class="btn btn-small btn-primary" onclick="saveFile()" disabled>Save <kbd>Ctrl+S</kbd></button>
+                </div>
+              </div>
+              <textarea id="code" spellcheck="false" disabled></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- Changes -->
+        <div class="tab-panel" data-panel="changes" hidden>
+          <div class="panel-actions">
+            <span class="muted small" id="diff-base"></span>
+            <div>
+              <button class="btn btn-small btn-ghost" id="discard-btn" onclick="discardChanges()">Discard uncommitted changes</button>
+              <button class="btn btn-small" onclick="loadDiff()">Refresh</button>
+            </div>
+          </div>
+          <pre id="diff" class="diff"></pre>
+        </div>
+
+        <!-- Submit -->
+        <div class="tab-panel" data-panel="submit" hidden>
+          <div class="submit-grid">
+            <form id="submit-form" class="card" onsubmit="startSubmit(event)">
+              <h3>Propose a change</h3>
+              <label>Commit message <span class="muted small">(used if there are uncommitted changes)</span>
+                <textarea id="commit-msg" rows="3" placeholder="Describe your change"></textarea>
+              </label>
+              <label>Review model
+                <select id="model-select"></select>
+              </label>
+              <div class="checks">
+                <label class="inline"><input type="checkbox" id="opt-register" checked> Register approval on chain (mock)</label>
+                <label class="inline"><input type="checkbox" id="opt-dry"> Dry run (build PR, don't send)</label>
+              </div>
+              <div class="as-who muted small">Submitting as <strong id="submit-as"></strong></div>
+              <button id="submit-btn" class="btn btn-primary btn-wide" type="submit">Submit to DOSR</button>
+            </form>
+
+            <div class="card pipeline" id="pipeline">
+              <div class="pipeline-head">
+                <h3>Submission progress</h3>
+                <span id="job-outcome" class="outcome outcome-pending">idle</span>
+              </div>
+              <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+              <div class="timing small">
+                <span>Elapsed <strong id="elapsed">0 ms</strong></span>
+                <span>Remaining <strong id="remaining">—</strong></span>
+                <span class="muted" id="job-id"></span>
+              </div>
+              <ol id="steps" class="steps"></ol>
+            </div>
+          </div>
+          <div id="result" class="result" hidden></div>
+        </div>
+
+        <!-- History -->
+        <div class="tab-panel" data-panel="history" hidden>
+          <table class="table" id="history-table">
+            <thead><tr><th>When</th><th>Outcome</th><th>Title</th><th>Profile</th><th>Transition</th><th>Total</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="history-detail" class="card" hidden></div>
+        </div>
+
+        <!-- Config -->
+        <div class="tab-panel" data-panel="config" hidden>
+          <div id="config-view"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- New repository dialog -->
+  <div id="modal" class="modal" hidden>
+    <form class="modal-card" id="new-repo-form" onsubmit="createRepo(event)">
+      <h2>New DOSR repository</h2>
+      <p class="muted small">Creates a git repo with an immutable review policy, makes the genesis commit, and registers it on the (mock) chain. The policy cannot be changed later — fork to change it.</p>
+      <div class="form-grid">
+        <label>Name <input id="nr-name" required pattern="[A-Za-z0-9._-]+" placeholder="my-project"></label>
+        <label>Seed project <select id="nr-seed"></select></label>
+        <label class="span2">Description <input id="nr-desc" placeholder="What is this project?"></label>
+        <label>Policy preset <select id="nr-preset"></select></label>
+        <label>PR template <select id="nr-template"></select></label>
+        <label class="span2">Approved models <span class="muted small">(provider/model@version, comma-separated; blank = preset)</span>
+          <input id="nr-models" placeholder="mock/deterministic-reviewer-v1@1"></label>
+        <label>Max changed files <input id="nr-max-files" type="number" min="1"></label>
+        <label>Max patch bytes <input id="nr-max-bytes" type="number" min="1"></label>
+      </div>
+      <details class="policy-preview"><summary>Preset policy preview</summary><pre id="nr-policy"></pre></details>
+      <div id="nr-error" class="error-box" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="nr-submit">Create repository</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

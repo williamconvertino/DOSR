@@ -1,0 +1,7 @@
+{
+  "name": "Bob",
+  "email": "bob@dosr.demo",
+  "description": "Honest contributor; uses thin bundles to save bandwidth",
+  "bundle_mode": "thin",
+  "color": "#2b8a3e"
+}
