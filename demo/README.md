@@ -4,6 +4,15 @@ Everything runs on one machine: the attestor (`services/attestor`), one client
 application (CLI + GUI), and a file-backed **mock** chain. No IPFS, real chain, LLM,
 or real signatures yet.
 
+## One-click start
+
+- **Windows:** double-click `demo\start-demo.bat`
+- **macOS:** double-click `demo/start-demo.command` (first time: right-click → Open if Gatekeeper complains;
+  if it isn't executable, run `chmod +x demo/start-demo.command`)
+
+On first run these create `demo/.venv` automatically, then start the attestor + GUI and open
+the browser. Close the window to stop. The manual steps below do the same thing.
+
 ## 1. Setup (once)
 
 Requires Python 3.10+ and git.
