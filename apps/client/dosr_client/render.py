@@ -9,6 +9,8 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+from .pipeline import fmt_bytes as size
+
 ICONS = {
     "pending": ("·", "dim"),
     "running": ("▶", "bold yellow"),
@@ -31,6 +33,23 @@ def ms(v) -> str:
     if v is None:
         return ""
     return f"{v:.0f} ms" if v < 1000 else f"{v / 1000:.2f} s"
+
+
+def transfer_text(t: dict | None) -> str:
+    if not t:
+        return ""
+    sent = (t.get("request_bytes") or 0) + (t.get("policy_bytes") or 0) + (t.get("bundle_bytes") or 0)
+    return (
+        f"sent {size(sent)} (request {size(t.get('request_bytes'))} · policy {size(t.get('policy_bytes'))} · "
+        f"bundle {size(t.get('bundle_bytes'))}) · received {size(t.get('response_bytes'))}"
+    )
+
+
+def pr_size_text(m: dict | None) -> str:
+    if not m:
+        return ""
+    t = m["total"]
+    return f"{t['words']:,} words · {t['chars']:,} chars · {t['lines']:,} lines · ~{t['est_tokens']:,} tokens (est. chars/4)"
 
 
 def short(oid: str | None, n: int = 12) -> str:
@@ -88,6 +107,12 @@ def result_view(snap: dict) -> Group:
     if info.get("chain_event"):
         body.add_row("Chain", f"canonical HEAD is now {short(info['chain_event']['candidate_git_oid'])} "
                               f"(block {info['chain_event']['block']})")
+    if info.get("pr_metrics"):
+        body.add_row("PR size", pr_size_text(info["pr_metrics"]))
+    if info.get("transfer"):
+        body.add_row("Transfer", transfer_text(info["transfer"]))
+    if info.get("bad_request"):
+        body.add_row("Demo", Text(f"deliberately bad request: {info['bad_request']}", style="yellow"))
     body.add_row("Total time", ms(snap["elapsed_ms"]))
     body.add_row("Request ID", snap["request_id"])
     body.add_row("Artifacts", snap["artifacts_dir"])

@@ -49,9 +49,24 @@ Suggested walkthrough:
    decision card with latency breakdown, warnings, and errors.
 6. Switch to *Mallory* (requests an unapproved model), make another edit, submit → **REJECTED**.
    Use *Discard uncommitted changes* / submit something else to continue.
-7. **History** tab: every submission, with the generated PR document, request JSON, and
+7. **Bad request demo:** make an edit, pick a mode under *Demo: send a bad request*, and submit.
+   The first three modes get a signed **REJECTED** review back from the attestor (its real reject
+   messages); the last two show how attestor validation errors are displayed:
+
+   | Mode | What's wrong | Attestor answer |
+   |---|---|---|
+   | `unapproved-model` | asks for `mock/always-approve@1` | rejected: model not approved |
+   | `parent-equals-candidate` | candidate OID = parent OID | rejected: candidate is the same commit as parent |
+   | `wrong-object-format` | sha256 OIDs in a sha1 repo | rejected: OIDs don't use the policy's object format |
+   | `malformed-request` | adds an unknown JSON field | HTTP 422 (schema) |
+   | `empty-bundle` | sends a 0-byte bundle | HTTP 400 |
+
+   CLI equivalent: `dosr submit -m "msg" --bad-request parent-equals-candidate`.
+   Every result shows **PR size** (words, chars, lines, ~tokens) and **Transfer** (bytes sent per
+   part / bytes received); the *PR size by section* card breaks the word count down further.
+8. **History** tab: every submission, with the generated PR document, request JSON, and
    attestor response. **Config** tab: policy, hashes, and the mock-chain record.
-8. Create *secure-vault* (strict preset) and submit anything → rejected because the strict
+9. Create *secure-vault* (strict preset) and submit anything → rejected because the strict
    policy does not trust the local attestor.
 
 ## 2b. Scripted CLI demo
@@ -68,6 +83,7 @@ PY demo/demo.py run --reset --start-attestor          # add --pause to step thro
 | 4 | Bob | commit on top of the old genesis commit | **error**: stale parent, caught before sending |
 | 5 | Carol | create `todo-js`, 2 local commits, one PR | **approved** |
 | 6 | Alice | `secure-vault` (strict policy) change | **rejected**: attestor not in policy |
+| 7 | Bob | `--bad-request parent-equals-candidate` | **rejected** by attestor |
 
 Afterwards `PY demo/demo.py gui` shows the same repos and history in the GUI.
 `PY demo/demo.py reset` wipes `demo/workspace/` (repos + chain state).

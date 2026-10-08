@@ -12,10 +12,12 @@ _CHUNK = 64 * 1024
 
 
 class AttestorError(RuntimeError):
-    def __init__(self, message: str, status_code: int | None = None, detail=None):
+    def __init__(self, message: str, status_code: int | None = None, detail=None,
+                 response_bytes: int | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.detail = detail
+        self.response_bytes = response_bytes
 
 
 @dataclass
@@ -23,6 +25,7 @@ class ReviewCall:
     status_code: int
     body: dict
     upload_bytes: int
+    response_bytes: int
     upload_ms: float
     wait_ms: float
 
@@ -128,11 +131,13 @@ class AttestorClient:
                 f"attestor rejected the request (HTTP {r.status_code}): {_format_detail(r.status_code, detail)}",
                 r.status_code,
                 detail,
+                response_bytes=len(r.content),
             )
         return ReviewCall(
             status_code=r.status_code,
             body=payload,
             upload_bytes=total,
+            response_bytes=len(r.content),
             upload_ms=(uploaded - marks["start"]) * 1000,
             wait_ms=(done - uploaded) * 1000,
         )

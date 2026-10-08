@@ -142,3 +142,30 @@ Repository layout the client creates:
 
 - Your uncommitted local edits (`weekly-todos/10-9-2026.MD`, untracked `docs/Project Checkpoint.pdf`) were **left alone and not included** in the commit.
 - `demo/.venv/` and `demo/workspace/` are git-ignored. The workspace currently holds the repos from the last scripted run, so `demo.py gui` shows them right away. Use `demo.py reset` to clear it.
+
+---
+
+## Update 2: GUI polish, size/word tracking, bad-request demo
+
+**GUI fixes.** These were found by screenshotting every tab in light, dark, and phone widths with headless Edge, since the Chrome extension was still unavailable:
+- New-repository dialog: the 2-column grid overflowed the card and hid the right column (seed, template, max patch bytes). It now uses `minmax(0, 1fr)` columns and full-width inputs.
+- Profile dropdown: shows only the name (the description is in the tooltip). It was very wide before.
+- Pipeline step rows: tighter spacing between each step and its detail line.
+- Config tab: cards no longer stretch to match the tall `policy.json` card, which now spans the full width.
+- Sidebar footer: paths are on one line with an ellipsis and the full path in a tooltip.
+- Phone width: the header wraps cleanly, tabs scroll horizontally, and there is no horizontal page scroll.
+- Added a favicon, which removes the 404 in the console.
+
+**Size and word tracking.** It is stored per submission and shown in the CLI, `dosr history`, the GUI result, and the GUI history.
+- `info.transfer` records bytes sent per part (request, policy, bundle), the total upload including multipart framing, and the response bytes received. Bytes received are also recorded for 400/422 errors.
+- `info.pr_metrics` and `pr-metrics.json` record words, chars, lines, bytes, and an estimated token count. They cover the full rendered PR (`pr.md`, what a reviewer model would read) and each section: diff, full files, context files, description, instructions.
+- ⚠️ The token count is a rough **chars/4** heuristic. Swap in the real tokenizer for the chosen model (e.g. the provider's token-count endpoint) before using it for cost estimates. Jakub/Gage may want to use `pr_metrics` in the prompt experiments.
+
+**Bad-request demo option.** It is available as `dosr submit --bad-request MODE`, the GUI selector "Demo: send a bad request", and scenario 7 in `demo.py run`.
+- The attestor has **no special "demo reject" value**. I checked `origin/main`, and it is unchanged. So the modes break the request in ways that trip the attestor's real mock rules, and its genuine reject messages come back. No attestor code was changed.
+  - `unapproved-model`, `parent-equals-candidate`, `wrong-object-format` → HTTP 200, signed **REJECTED** review
+  - `malformed-request` → 422; `empty-bundle` → 400. These are shown as errors.
+- The tampering happens after the PR and bundle are built, so the rest of the pipeline behaves normally. Each such run is flagged with a `DEMO:` warning and a "Demo" row in the result.
+- If Yuhan adds an explicit demo-reject switch later, it can become one more entry in `BAD_REQUESTS` (`apps/client/dosr_client/pipeline.py`).
+
+**Tests:** protocol 11, chain 8, client 26 (adds all 5 bad-request modes, size/word accounting, and text metrics). The scripted demo now runs 7 scenarios, all with the expected outcomes.

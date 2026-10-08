@@ -25,7 +25,7 @@ pip install -e packages/protocol -e packages/git-storage -e packages/chain -e "a
 | `dosr config [--raw]` | repository configuration / policy, with hash checks against repo.json and chain |
 | `dosr diff` | committed + uncommitted changes since the canonical HEAD |
 | `dosr commit -m MSG` | stage everything and commit as the current client profile |
-| `dosr submit [-m MSG] [--model p/m@v] [--dry-run] [--no-register] [--bundle-mode full\|thin] [--show-pr] [--json]` | the full PR pipeline with live progress |
+| `dosr submit [-m MSG] [--model p/m@v] [--dry-run] [--no-register] [--bundle-mode full\|thin] [--bad-request MODE] [--show-pr] [--json]` | the full PR pipeline with live progress. `--bad-request` (demo) deliberately breaks the request: `unapproved-model`, `parent-equals-candidate`, `wrong-object-format` (→ attestor REJECTED), `malformed-request` (→ 422), `empty-bundle` (→ 400) |
 | `dosr history` / `dosr show [ID] [--pr] [--response]` | past submissions and their artifacts |
 | `dosr server` | attestor health + keys |
 | `dosr chain` / `dosr register` | inspect mock chain / register an existing repo's genesis |
@@ -51,6 +51,11 @@ Exit codes for `submit`: 0 approved / dry-run, 2 rejected, 1 error.
 | Wait for attestor decision | time from upload complete to response |
 | Verify attestation | response bound to our request (oids, bundle hash, repo, model, signer in policy, expiry) |
 | Register on chain (mock) | approved only; parent must still equal HEAD |
+
+Each submission also records **PR size** (`pr-metrics.json`: words/chars/lines/bytes and a rough
+chars/4 token estimate, for the whole rendered PR and per section: diff, full files, context files,
+description, instructions) and **transfer sizes** (request/policy/bundle bytes sent, total upload incl.
+multipart framing, response bytes received). Both appear in the CLI result, `dosr history`, and the GUI.
 
 Each step records status, latency, detail, and error; remaining-time estimates come
 from a per-repo moving average in `.git/dosr/timings.json`. Artifacts for every

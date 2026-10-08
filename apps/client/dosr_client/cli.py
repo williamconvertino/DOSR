@@ -30,8 +30,8 @@ from dosr_protocol.pr_format import TEMPLATES, PRFormatError
 from . import __version__
 from .attestor import AttestorClient, AttestorError
 from .config import ConfigError, DosrRepo, profiles_in_dir, resolve_attestor_url, resolve_profile
-from .pipeline import SubmitOptions, Submission
-from .render import OUTCOME_STYLE, ms, progress_view, result_view, short
+from .pipeline import BAD_REQUESTS, SubmitOptions, Submission
+from .render import OUTCOME_STYLE, ms, progress_view, result_view, short, size
 from .repo_ops import commit_all, create_repository, register_existing, repo_status
 
 console = Console(highlight=False)
@@ -235,6 +235,7 @@ def cmd_submit(args):
         register=not args.no_register,
         dry_run=args.dry_run,
         bundle_mode=args.bundle_mode,
+        bad_request=args.bad_request,
     )
     sub = Submission(repo, profile, attestor, chain, opts)
     title = f"[bold]DOSR submit[/] · {repo.name} · {profile.name} → {attestor.base_url}"
@@ -271,7 +272,7 @@ def cmd_history(args):
         console.print("[dim]No submissions yet.[/]")
         return
     t = Table(title=f"Submissions · {repo.name}", box=box.SIMPLE_HEAD, title_justify="left")
-    for col in ("When", "Request ID", "Outcome", "Title", "Candidate", "Total"):
+    for col in ("When", "Request ID", "Outcome", "Title", "Candidate", "PR words", "Sent / recv", "Total"):
         t.add_column(col, overflow="fold", no_wrap=col != "Title")
     for r in runs:
         label, style = OUTCOME_STYLE.get(r["outcome"], (r["outcome"], ""))
@@ -281,9 +282,18 @@ def cmd_history(args):
             Text(label, style=style),
             (r.get("info", {}).get("pr") or {}).get("title", "—"),
             short(r.get("info", {}).get("candidate_git_oid")),
+            f"{r['info']['pr_metrics']['total']['words']:,}" if r.get("info", {}).get("pr_metrics") else "—",
+            _sent_recv(r.get("info", {}).get("transfer")),
             ms(r.get("elapsed_ms")),
         )
     console.print(t)
+
+
+def _sent_recv(t: dict | None) -> str:
+    if not t:
+        return "—"
+    sent = sum(t.get(k) or 0 for k in ("request_bytes", "policy_bytes", "bundle_bytes"))
+    return f"{size(sent)} / {size(t.get('response_bytes'))}"
 
 
 def cmd_show(args):
@@ -413,6 +423,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="build everything but do not contact the attestor")
     s.add_argument("--no-register", action="store_true", help="do not submit an approval to the chain")
     s.add_argument("--bundle-mode", choices=["full", "thin"])
+    s.add_argument("--bad-request", choices=sorted(BAD_REQUESTS), metavar="MODE",
+                   help="DEMO: send a deliberately bad request so the attestor rejects it. MODE is one of: "
+                        + "; ".join(f"{k} ({v})" for k, v in BAD_REQUESTS.items()))
     s.add_argument("--show-pr", action="store_true", help="print the generated PR afterwards")
     s.add_argument("--json", action="store_true", help="print the final result as JSON only")
     s.set_defaults(func=cmd_submit)

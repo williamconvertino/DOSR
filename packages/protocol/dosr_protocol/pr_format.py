@@ -167,6 +167,34 @@ def build_pr(
     return pr
 
 
+def text_metrics(text: str) -> dict:
+    """Size of a text as a reviewer model would see it. `est_tokens` is the rough
+    chars/4 rule of thumb for English + code; use a real tokenizer for billing."""
+    return {
+        "words": len(text.split()),
+        "chars": len(text),
+        "lines": text.count("\n") + (1 if text and not text.endswith("\n") else 0),
+        "bytes": len(text.encode("utf-8")),
+        "est_tokens": round(len(text) / 4),
+    }
+
+
+def pr_metrics(pr: dict, markdown: str) -> dict:
+    """Totals for the rendered PR plus a per-section breakdown."""
+    sections = {
+        "diff": pr["diff"],
+        "full_files": "\n".join(pr["full_files"].values()),
+        "context_files": "\n".join(pr["context_files"].values()),
+        "description": "\n".join(filter(None, [pr["title"], pr["description"]])),
+        "instructions": "\n".join([pr["review_instructions"], *pr["checklist"]]),
+    }
+    return {
+        "total": text_metrics(markdown),
+        "sections": {name: text_metrics(text) for name, text in sections.items()},
+        "token_estimate_method": "chars/4",
+    }
+
+
 def render_markdown(pr: dict) -> str:
     s = pr["stats"]
     lines = [

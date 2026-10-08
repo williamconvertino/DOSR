@@ -9,6 +9,9 @@ const shortOid = (oid, n = 12) => {
   const [fmt, hex] = oid.split(":");
   return hex ? `${fmt}:${hex.slice(0, n)}` : oid.slice(0, n);
 };
+const fmtBytes = (n) => (n == null ? "—" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`);
+const fmtNum = (n) => (n == null ? "—" : Number(n).toLocaleString());
+const sentBytes = (t) => (t ? (t.request_bytes || 0) + (t.policy_bytes || 0) + (t.bundle_bytes || 0) : null);
 const STATUS_ICON = { pending: "·", running: "▶", done: "✓", failed: "✗", skipped: "–" };
 
 const ui = {
@@ -66,13 +69,26 @@ async function loadState() {
   ui.state = await api("/api/state");
   const s = ui.state;
   $("#version").textContent = "v" + s.version;
-  $("#workspace").textContent = s.workspace;
-  $("#chain-path").textContent = s.chain_state;
+  for (const [id, path] of [["#workspace", s.workspace], ["#chain-path", s.chain_state]]) {
+    $(id).textContent = path;
+    $(id).title = path;
+  }
 
   const sel = $("#profile");
-  sel.innerHTML = s.profiles.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${p.description ? " — " + esc(p.description) : ""}</option>`).join("");
+  sel.innerHTML = s.profiles.map((p) => `<option value="${esc(p.id)}" title="${esc(p.description)}">${esc(p.name)}</option>`).join("");
   sel.value = s.active_profile;
   renderAvatar();
+
+  const bad = $("#bad-request");
+  if (!bad.options.length) {
+    bad.innerHTML = `<option value="">None — send a normal request</option>` +
+      s.bad_requests.map((b) => `<option value="${esc(b.id)}">${esc(b.id)}</option>`).join("");
+    bad.onchange = () => {
+      const b = s.bad_requests.find((x) => x.id === bad.value);
+      $("#bad-request-hint").textContent = b ? b.description : "";
+      bad.classList.toggle("is-bad", !!b);
+    };
+  }
 
   const list = $("#repo-list");
   list.innerHTML = s.repos.length
@@ -92,6 +108,7 @@ function renderAvatar() {
   const av = $("#profile-avatar");
   av.textContent = (p?.name || "?").slice(0, 1).toUpperCase();
   av.style.background = p?.color || "var(--accent)";
+  $("#profile").title = p?.description || "";
   $("#submit-as").textContent = p ? `${p.name} <${p.email}>` : "";
 }
 
@@ -328,6 +345,11 @@ function renderResult(job, target) {
   if (info.parent_git_oid) kv.push(["Transition", `<code>${esc(shortOid(info.parent_git_oid))}</code> → <code>${esc(shortOid(info.candidate_git_oid))}</code>`]);
   if (info.model) kv.push(["Model", `<code>${esc(info.model)}</code>`]);
   if (info.chain_event) kv.push(["Chain", `canonical HEAD → <code>${esc(shortOid(info.chain_event.candidate_git_oid))}</code> (block ${info.chain_event.block})`]);
+  const m = info.pr_metrics?.total;
+  if (m) kv.push(["PR size", `${fmtNum(m.words)} words · ${fmtNum(m.chars)} chars · ~${fmtNum(m.est_tokens)} tokens <span class="muted">(est. chars/4)</span>`]);
+  const t = info.transfer;
+  if (t) kv.push(["Transfer", `sent ${fmtBytes(sentBytes(t))} <span class="muted">(request ${fmtBytes(t.request_bytes)} · policy ${fmtBytes(t.policy_bytes)} · bundle ${fmtBytes(t.bundle_bytes)})</span> · received ${fmtBytes(t.response_bytes)}`]);
+  if (info.bad_request) kv.push(["Demo", `<span class="badge warn">deliberately bad request: ${esc(info.bad_request)}</span>`]);
   kv.push(["Total time", fmtMs(job.elapsed_ms)]);
   kv.push(["Artifacts", `<code class="small">${esc(job.artifacts_dir)}</code>`]);
 
@@ -337,6 +359,13 @@ function renderResult(job, target) {
       <div><div class="lat-bar ${s.status === "failed" ? "failed" : ""}" style="width:${(100 * s.duration_ms) / longest}%"></div></div>
       <span class="t">${fmtMs(s.duration_ms)}</span></div>`).join("");
 
+  const secs = info.pr_metrics?.sections;
+  const sizeCard = secs ? `<div class="card"><h3>PR size by section</h3>
+    <table class="mini"><thead><tr><th>Section</th><th class="num">Words</th><th class="num">Chars</th><th class="num">Lines</th><th class="num">~Tokens</th></tr></thead><tbody>
+    ${Object.entries(secs).map(([k, v]) => `<tr><td>${esc(k.replace("_", " "))}</td><td class="num">${fmtNum(v.words)}</td><td class="num">${fmtNum(v.chars)}</td><td class="num">${fmtNum(v.lines)}</td><td class="num">${fmtNum(v.est_tokens)}</td></tr>`).join("")}
+    <tr class="total"><td>Rendered PR (total)</td><td class="num">${fmtNum(m.words)}</td><td class="num">${fmtNum(m.chars)}</td><td class="num">${fmtNum(m.lines)}</td><td class="num">${fmtNum(m.est_tokens)}</td></tr>
+    </tbody></table><p class="muted small">Total includes markdown headings and metadata, so it exceeds the sum of sections. Token counts are a rough chars/4 estimate.</p></div>` : "";
+
   target.innerHTML = `
     <div class="decision ${job.outcome}">
       <h2>${labels[job.outcome] || esc(job.outcome)}</h2>
@@ -344,7 +373,10 @@ function renderResult(job, target) {
     </div>
     ${job.errors.length ? `<div class="error-box"><strong>Errors</strong><ul>${job.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>` : ""}
     ${job.warnings.length ? `<div class="warn-box"><strong>Warnings</strong><ul>${job.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}
-    ${lat ? `<div class="card"><h3>Latency by step</h3>${lat}</div>` : ""}`;
+    <div class="result-cards">
+      ${lat ? `<div class="card"><h3>Latency by step</h3>${lat}</div>` : ""}
+      ${sizeCard}
+    </div>`;
   target.hidden = false;
 }
 
@@ -361,6 +393,7 @@ async function startSubmit(ev) {
         model: $("#model-select").value || null,
         register_on_chain: $("#opt-register").checked,
         dry_run: $("#opt-dry").checked,
+        bad_request: $("#bad-request").value || null,
       },
     });
     ui.jobId = job_id;
@@ -383,6 +416,7 @@ async function pollJob() {
       $("#submit-btn").disabled = false;
       renderResult(job, $("#result"));
       if (job.outcome === "approved" || job.outcome === "rejected") $("#commit-msg").value = "";
+      if ($("#bad-request").value) { $("#bad-request").value = ""; $("#bad-request").onchange(); }
       await Promise.all([refreshRepo(), loadState()]);
       return;
     }
@@ -406,8 +440,10 @@ async function loadHistory() {
         <td>${esc(r.info?.pr?.title || "—")}</td>
         <td>${esc(r.info?.profile || "")}</td>
         <td><code>${esc(shortOid(r.info?.parent_git_oid, 8))}</code> → <code>${esc(shortOid(r.info?.candidate_git_oid, 8))}</code></td>
-        <td>${fmtMs(r.elapsed_ms)}</td></tr>`).join("")
-    : `<tr><td colspan="6" class="muted">No submissions yet.</td></tr>`;
+        <td class="num">${fmtNum(r.info?.pr_metrics?.total?.words)}</td>
+        <td class="num">${r.info?.transfer ? `${fmtBytes(sentBytes(r.info.transfer))} / ${fmtBytes(r.info.transfer.response_bytes)}` : "—"}</td>
+        <td class="num">${fmtMs(r.elapsed_ms)}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="muted">No submissions yet.</td></tr>`;
   tbody.querySelectorAll("tr[data-id]").forEach((tr) => (tr.onclick = () => showSubmission(tr.dataset.id)));
   $("#history-detail").hidden = true;
 }
@@ -456,7 +492,7 @@ async function loadConfig() {
         ["Accepted transitions", onchain.accepted_transition_count], ["Registered at block", onchain.registered_block],
         ["Recent events", onchain.events.slice(-5).reverse().map((e) => `block ${e.block}: <code>${esc(shortOid(e.parent_git_oid, 8))}</code> → <code>${esc(shortOid(e.candidate_git_oid, 8))}</code>`).join("<br>") || "—"]])
         : `<p class="muted">Not registered.</p><button class="btn btn-small" onclick="registerRepo()">Register genesis now</button>`}</div>
-      <div class="card"><h3>policy.json</h3><pre class="block">${esc(JSON.stringify(p, null, 2))}</pre></div>
+      <div class="card wide"><h3>policy.json</h3><pre class="block">${esc(JSON.stringify(p, null, 2))}</pre></div>
     </div>`;
 }
 

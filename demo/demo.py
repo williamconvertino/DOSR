@@ -257,6 +257,17 @@ def cmd_run(args):
                   "--model", "provider-a/review-model-a@pinned-version", repo="secure-vault")
         record("Alice: secure-vault change", "Alice", ch["expect"], "secure-vault")
 
+        # 7. Deliberately bad request ---------------------------------------------------
+        scenario("7. Deliberately bad request (demo option)", "Bob",
+                 "`dosr submit --bad-request parent-equals-candidate` claims the candidate is its own parent. "
+                 "The attestor's checks catch it and return a signed REJECTED review. (Other modes: "
+                 "unapproved-model, wrong-object-format, malformed-request, empty-bundle.)")
+        (WORKSPACE / "calculator-py" / "CHANGELOG.md").write_text("- power() and modulo()\n")
+        as_client("bob", "submit", "-m", "Add changelog", "--bad-request", "parent-equals-candidate",
+                  repo="calculator-py")
+        record("Bob: bad request (parent = candidate)", "Bob", "rejected", "calculator-py")
+        git.run("reset", "-q", "--hard", "HEAD~1")
+
         # Summary -------------------------------------------------------------------
         console.print()
         console.print(Rule("[bold]Summary"))

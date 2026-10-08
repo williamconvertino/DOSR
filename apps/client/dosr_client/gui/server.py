@@ -37,7 +37,7 @@ from ..config import (
     resolve_attestor_url,
     resolve_profile,
 )
-from ..pipeline import STEPS, SubmitOptions, Submission
+from ..pipeline import BAD_REQUESTS, STEPS, SubmitOptions, Submission
 from ..repo_ops import commit_all, create_repository, register_existing, repo_status
 
 STATIC = Path(__file__).parent / "static"
@@ -136,6 +136,7 @@ class SubmitBody(BaseModel):
     model: str | None = None
     register_on_chain: bool = True
     dry_run: bool = False
+    bad_request: str | None = None
 
 
 # ---------------------------------------------------------------- app
@@ -182,6 +183,7 @@ def create_app(state: GuiState) -> FastAPI:
             "presets": [{"id": k, "description": v, "policy": load_preset(k)} for k, v in PRESETS.items()],
             "templates": [{"id": t.id, "description": t.description} for t in TEMPLATES.values()],
             "steps": [{"id": i, "label": label} for i, label in STEPS],
+            "bad_requests": [{"id": k, "description": v} for k, v in BAD_REQUESTS.items()],
         }
 
     @app.post("/api/profile")
@@ -320,6 +322,8 @@ def create_app(state: GuiState) -> FastAPI:
     @app.post("/api/repos/{name}/submit")
     def start_submit(name: str, body: SubmitBody):
         repo = state.repo(name)
+        if body.bad_request and body.bad_request not in BAD_REQUESTS:
+            raise HTTPException(400, f"unknown bad_request {body.bad_request!r}")
         with state.lock:
             busy = [j for j in state.jobs.values() if j.repo.path == repo.path and j.outcome in ("pending", "running")]
             if busy:
@@ -329,6 +333,7 @@ def create_app(state: GuiState) -> FastAPI:
                 model=parse_model_spec(body.model) if body.model else None,
                 register=body.register_on_chain,
                 dry_run=body.dry_run,
+                bad_request=body.bad_request or None,
             )
             sub = Submission(repo, state.profile, state.attestor(), state.chain, opts)
             state.jobs[sub.request_id] = sub

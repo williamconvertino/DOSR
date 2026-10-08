@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DOSR Client</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1l7 7-7 7-7-7z' fill='%233b5bdb'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -26,8 +27,8 @@
       </div>
       <ul id="repo-list" class="repo-list"></ul>
       <div class="sidebar-foot muted small">
-        <div>Workspace: <code id="workspace"></code></div>
-        <div>Mock chain: <code id="chain-path"></code></div>
+        <div class="foot-row"><span>Workspace</span><code id="workspace"></code></div>
+        <div class="foot-row"><span>Mock chain</span><code id="chain-path"></code></div>
       </div>
     </aside>
 
@@ -107,6 +108,10 @@
                 <label class="inline"><input type="checkbox" id="opt-register" checked> Register approval on chain (mock)</label>
                 <label class="inline"><input type="checkbox" id="opt-dry"> Dry run (build PR, don't send)</label>
               </div>
+              <label>Demo: send a bad request
+                <select id="bad-request"></select>
+                <span id="bad-request-hint" class="hint"></span>
+              </label>
               <div class="as-who muted small">Submitting as <strong id="submit-as"></strong></div>
               <button id="submit-btn" class="btn btn-primary btn-wide" type="submit">Submit to DOSR</button>
             </form>
@@ -131,7 +136,7 @@
         <!-- History -->
         <div class="tab-panel" data-panel="history" hidden>
           <table class="table" id="history-table">
-            <thead><tr><th>When</th><th>Outcome</th><th>Title</th><th>Profile</th><th>Transition</th><th>Total</th></tr></thead>
+            <thead><tr><th>When</th><th>Outcome</th><th>Title</th><th>Profile</th><th>Transition</th><th class="num">PR words</th><th class="num">Sent / recv</th><th class="num">Total</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="history-detail" class="card" hidden></div>

@@ -87,3 +87,11 @@ def test_context_file_selection():
     t = TEMPLATES["security-sensitive-review-v1"]
     picked = select_context_files(t, ["README.md", "src/a.py", "requirements.txt", ".dosr/policy.json"], {"src/a.py"})
     assert picked == ["README.md", "requirements.txt"]
+
+
+def test_text_metrics():
+    from dosr_protocol.pr_format import text_metrics
+
+    m = text_metrics("hello world\nfoo bar baz\n")
+    assert m == {"words": 5, "chars": 24, "lines": 2, "bytes": 24, "est_tokens": 6}
+    assert text_metrics("")["words"] == 0

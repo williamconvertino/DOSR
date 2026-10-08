@@ -20,6 +20,7 @@ from dosr_protocol.pr_format import (
     build_pr,
     check_limits,
     get_template,
+    pr_metrics,
     render_markdown,
     select_context_files,
 )
@@ -82,6 +83,45 @@ class SubmitOptions:
     register: bool = True  # submit approved transitions to the (mock) chain
     dry_run: bool = False  # stop after building the review request
     bundle_mode: str | None = None  # "full" | "thin"; defaults to the profile's
+    bad_request: str | None = None  # demo only: one of BAD_REQUESTS
+
+
+# Demo-only ways to send a deliberately bad request so the attestor's reject paths
+# can be shown. The first three hit the attestor's mock decision rules and come back
+# as a signed REJECTED review (HTTP 200); the last two fail validation (HTTP 400/422).
+BAD_REQUESTS = {
+    "unapproved-model": "ask for a review model the policy does not approve",
+    "parent-equals-candidate": "claim the candidate commit is the parent itself",
+    "wrong-object-format": "use sha256 OIDs in a sha1 repository",
+    "malformed-request": "add an unknown field (fails the attestor's schema → 422)",
+    "empty-bundle": "send an empty git bundle (→ 400)",
+}
+
+
+def _apply_bad_request(mode: str, request: dict) -> dict:
+    import hashlib
+
+    tr = request["transition"]
+    if mode == "unapproved-model":
+        request["review"] = {"provider": "mock", "model": "always-approve", "model_version": "1"}
+    elif mode == "parent-equals-candidate":
+        tr["candidate_git_oid"] = tr["parent_git_oid"]
+    elif mode == "wrong-object-format":
+        for key in ("parent_git_oid", "candidate_git_oid"):
+            tr[key] = "sha256:" + hashlib.sha256(tr[key].encode()).hexdigest()
+    elif mode == "malformed-request":
+        request["demo_unexpected_field"] = "this field is not part of protocol v0.1"
+    elif mode != "empty-bundle":
+        raise ValueError(f"unknown bad-request mode {mode!r} (choose from {', '.join(BAD_REQUESTS)})")
+    return request
+
+
+def fmt_bytes(n: int | None) -> str:
+    if n is None:
+        return "—"
+    if n < 1024:
+        return f"{n} B"
+    return f"{n / 1024:.1f} KB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.2f} MB"
 
 
 class Submission:
@@ -195,6 +235,7 @@ class Submission:
                     "message": self.options.message,
                     "register": self.options.register,
                     "dry_run": self.options.dry_run,
+                    "bad_request": self.options.bad_request,
                 },
             }
 
@@ -354,13 +395,17 @@ class Submission:
                 full_files=full_files,
                 context_files=context,
             )
+            markdown = render_markdown(pr)
+            metrics = pr_metrics(pr, markdown)
             self._write("pr.json", pr)
-            self._write("pr.md", render_markdown(pr))
-            st = pr["stats"]
+            self._write("pr.md", markdown)
+            self._write("pr-metrics.json", metrics)
+            st, tot = pr["stats"], metrics["total"]
             self.info["pr"] = {"title": pr["title"], "pr_hash": pr["pr_hash"], **st}
+            self.info["pr_metrics"] = metrics
             s.detail = (
                 f"\"{pr['title']}\" · {st['changed_files']} file(s) +{st['additions']}/-{st['deletions']} · "
-                f"{st['patch_bytes']} B patch · {len(context)} context file(s)"
+                f"{tot['words']:,} words · ~{tot['est_tokens']:,} tokens · {len(context)} context file(s)"
             )
 
         # 6. request ------------------------------------------------------------
@@ -374,10 +419,18 @@ class Submission:
                 model=model,
                 client_version=self.profile.client_version,
             )
+            if opts.bad_request:
+                request = _apply_bad_request(opts.bad_request, request)
+                self.info["bad_request"] = opts.bad_request
+                self.warnings.append(
+                    f"DEMO: deliberately bad request sent ({opts.bad_request}: {BAD_REQUESTS[opts.bad_request]})"
+                )
             request_bytes = json.dumps(request, indent=2).encode("utf-8")
             self._write("request.json", request_bytes)
             self._write("policy.json", policy_bytes)
-            s.detail = f"request {self.request_id} · {len(request_bytes)} B"
+            s.detail = f"request {self.request_id} · {fmt_bytes(len(request_bytes))}" + (
+                f" · ⚠ bad request: {opts.bad_request}" if opts.bad_request else ""
+            )
 
         if opts.dry_run:
             with self._lock:
@@ -387,6 +440,15 @@ class Submission:
 
         # 7+8. upload / await ---------------------------------------------------
         bundle_bytes = (self.artifacts_dir / "change.bundle").read_bytes()
+        if opts.bad_request == "empty-bundle":
+            bundle_bytes = b""
+        transfer = self.info["transfer"] = {
+            "request_bytes": len(request_bytes),
+            "policy_bytes": len(policy_bytes),
+            "bundle_bytes": len(bundle_bytes),
+            "upload_total_bytes": None,  # incl. multipart framing
+            "response_bytes": None,
+        }
         upload = self.step("upload")
         wait = self.step("await")
         upload_cm = self._run_step("upload")
@@ -395,7 +457,11 @@ class Submission:
 
         def on_uploaded():
             # Called from inside the HTTP request once the last body byte is sent.
-            upload.detail = f"{(len(bundle_bytes) + len(request_bytes) + len(policy_bytes)) / 1024:.1f} KB uploaded"
+            upload.detail = (
+                f"sent {fmt_bytes(len(request_bytes) + len(policy_bytes) + len(bundle_bytes))} · "
+                f"request {fmt_bytes(len(request_bytes))} · policy {fmt_bytes(len(policy_bytes))} · "
+                f"bundle {fmt_bytes(len(bundle_bytes))}"
+            )
             upload_cm.__exit__(None, None, None)
             state["phase"] = "await"
             state["await_cm"] = self._run_step("await")
@@ -406,6 +472,8 @@ class Submission:
         try:
             call = self.attestor.submit_review(request_bytes, policy_bytes, bundle_bytes, on_uploaded=on_uploaded)
         except Exception as e:
+            if isinstance(e, AttestorError) and e.response_bytes is not None:
+                transfer["response_bytes"] = e.response_bytes
             cm = state["await_cm"] if state["phase"] == "await" else upload_cm
             try:
                 cm.__exit__(type(e), e, e.__traceback__)
@@ -415,6 +483,8 @@ class Submission:
         if state["phase"] == "upload":  # transport never pulled the body (unlikely)
             on_uploaded()
         response = call.body
+        transfer["upload_total_bytes"] = call.upload_bytes
+        transfer["response_bytes"] = call.response_bytes
         self._write("response.json", response)
         result = response.get("result", {})
         approved = bool(result.get("approved"))
@@ -428,7 +498,10 @@ class Submission:
                 "upload_ms": round(call.upload_ms, 1),
                 "server_wait_ms": round(call.wait_ms, 1),
             }
-            wait.detail = ("APPROVED" if approved else "REJECTED") + f" · {result.get('summary', '')}"
+            wait.detail = (
+                ("APPROVED" if approved else "REJECTED")
+                + f" · received {fmt_bytes(call.response_bytes)} · {result.get('summary', '')}"
+            )
         state["await_cm"].__exit__(None, None, None)
 
         # 9. verify -------------------------------------------------------------

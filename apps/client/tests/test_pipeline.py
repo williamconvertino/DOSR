@@ -1,6 +1,7 @@
 """End-to-end: create repo -> edit -> submit to the real attestor app -> decision."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -184,3 +185,42 @@ def test_bundle_modes(tmp_path, chain, alice, attestor, mode):
     sub = submit(repo, alice, attestor, chain, SubmitOptions(message="x", bundle_mode=mode))
     assert sub.outcome == "approved"
     assert sub.info["bundle"]["mode"] == mode
+
+
+@pytest.mark.parametrize(
+    "mode, outcome, needle",
+    [
+        ("unapproved-model", "rejected", "not approved"),
+        ("parent-equals-candidate", "rejected", "same commit as parent"),
+        ("wrong-object-format", "rejected", "object format"),
+        ("malformed-request", "error", "HTTP 422"),
+        ("empty-bundle", "error", "HTTP 400"),
+    ],
+)
+def test_bad_request_demo_modes(tmp_path, chain, alice, attestor, mode, outcome, needle):
+    repo, created = make_repo(tmp_path, chain, alice)
+    edit(repo)
+    result = submit(repo, alice, attestor, chain, SubmitOptions(message="x", bad_request=mode)).to_dict()
+    assert result["outcome"] == outcome
+    text = (result["decision"] or {}).get("summary", "") + " ".join(result["errors"])
+    assert needle in text
+    assert result["info"]["bad_request"] == mode
+    assert any("DEMO" in w for w in result["warnings"])
+    assert result["info"]["transfer"]["response_bytes"] > 0
+    assert chain.get_head(repo.config["repo_id"]) == created["genesis_git_oid"]
+
+
+def test_sizes_and_word_counts_recorded(tmp_path, chain, alice, attestor):
+    repo, _ = make_repo(tmp_path, chain, alice)
+    edit(repo)
+    result = submit(repo, alice, attestor, chain, SubmitOptions(message="Add sub()")).to_dict()
+    t = result["info"]["transfer"]
+    art_dir = Path(repo.load_submission(result["request_id"])["dir"])
+    assert t["bundle_bytes"] == (art_dir / "change.bundle").stat().st_size
+    assert t["upload_total_bytes"] > t["request_bytes"] + t["policy_bytes"] + t["bundle_bytes"]  # + multipart framing
+    assert t["response_bytes"] > 100
+    m = result["info"]["pr_metrics"]
+    pr_md = repo.load_submission(result["request_id"])["pr_markdown"]
+    assert m["total"]["words"] == len(pr_md.split())
+    assert m["total"]["est_tokens"] == round(len(pr_md) / 4)
+    assert m["sections"]["diff"]["words"] > 0
