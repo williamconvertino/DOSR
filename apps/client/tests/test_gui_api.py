@@ -13,14 +13,14 @@ DEMO = Path(__file__).resolve().parents[3] / "demo"
 
 
 @pytest.fixture
-def gui(tmp_path, attestor, monkeypatch):
+def gui(tmp_path, chain, attestor, monkeypatch):
     state = gui_server.GuiState(
         workspace=tmp_path / "ws",
         seeds_dir=DEMO / "projects",
         profiles_dir=DEMO / "clients",
         profile_path=None,
         attestor_url=None,
-        chain_state=tmp_path / "chain.json",
+        chain_state=chain.state_path,  # the attestor fixture reads the same chain
     )
     # Route the GUI's attestor calls to the in-process attestor app.
     monkeypatch.setattr(state, "attestor", lambda: attestor)

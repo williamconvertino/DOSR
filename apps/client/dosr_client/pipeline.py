@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from dosr_chain import MockChain
-from dosr_git import create_bundle
+from dosr_git import create_bundle, pr_inputs
 from dosr_protocol.canonical import new_request_id, qualify_oid, unqualify_oid
 from dosr_protocol.policy import format_model
 from dosr_protocol.pr_format import (
@@ -22,12 +22,11 @@ from dosr_protocol.pr_format import (
     get_template,
     pr_metrics,
     render_markdown,
-    select_context_files,
 )
 from dosr_protocol.wire import build_review_request, verify_response
 
 from .attestor import AttestorClient, AttestorError
-from .config import PROTECTED_PATHS, ClientProfile, DosrRepo
+from .config import PROTECTED_PATHS, ClientProfile, DosrRepo, provider_api_key, provider_key_env
 from .timings import TimingStore
 
 STEPS = [
@@ -262,6 +261,12 @@ class Submission:
             self._emit()
         return self.to_dict()
 
+    def _attestor_has(self, repo_id: str, git_oid: str) -> bool:
+        try:
+            return self.attestor.has_commit(repo_id, git_oid)
+        except AttestorError:
+            return False  # unknown: a full bundle always works
+
     def _write(self, name: str, data) -> None:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         path = self.artifacts_dir / name
@@ -302,6 +307,12 @@ class Submission:
             approved = {(m["provider"], m["model"], m["version"]) for m in policy["review"]["approved_models"]}
             if (model["provider"], model["model"], model["version"]) not in approved:
                 self.warnings.append(f"model {format_model(model)} is not in the policy's approved models")
+            provider_key = provider_api_key(model["provider"])
+            if provider_key_env(model["provider"]) and not provider_key:
+                # Only the attestor knows whether it will call the model (it does not if a
+                # check fails first); if it does, it answers 400 asking for the key.
+                self.warnings.append(f"no {provider_key_env(model['provider'])} set: the attestor cannot call "
+                                     f"{format_model(model)} for you (environment or .env)")
 
             t = time.perf_counter()
             health = self.attestor.health()
@@ -321,7 +332,7 @@ class Submission:
         with self._run_step("commit") as s:
             if git.is_dirty():
                 if not (opts.message and opts.message.strip()):
-                    raise StepFailed("there are uncommitted changes; pass a commit message (-m) or commit first")
+                    raise StepFailed("there are uncommitted changes; commit them first (GUI: Changes tab; CLI: dosr commit) or give a commit message (-m)")
                 n = len(git.status())
                 git.add_all()
                 candidate = git.commit(opts.message, self.profile.name, self.profile.email)
@@ -354,46 +365,33 @@ class Submission:
         # 4. bundle -------------------------------------------------------------
         with self._run_step("bundle") as s:
             mode = opts.bundle_mode or self.profile.bundle_mode or "full"
+            if mode == "thin" and not opts.dry_run and not self._attestor_has(cfg["repo_id"], canonical_q):
+                self.warnings.append("attestor does not have the parent commit yet; sent a full bundle instead of thin")
+                mode = "full"
             info = create_bundle(git, candidate, self.artifacts_dir / "change.bundle", parent=parent, mode=mode)
             self.info["bundle"] = {"sha256": info.sha256, "size_bytes": info.size_bytes, "mode": info.mode}
             s.detail = f"{info.mode} bundle · {info.size_bytes / 1024:.1f} KB · {info.sha256[:19]}…"
 
         # 5. PR -----------------------------------------------------------------
         with self._run_step("pr") as s:
-            files = git.changed_files(parent, candidate)
+            inputs = pr_inputs(git, template, parent, candidate)
+            files, context = inputs["files"], inputs["context_files"]
             touched = {f["path"] for f in files} | {f.get("old_path") for f in files if f.get("old_path")}
             protected = sorted(touched & set(PROTECTED_PATHS))
             if protected:
                 raise StepFailed(
                     f"change modifies {', '.join(protected)}; the repository policy is immutable (fork instead)"
                 )
-            diff_text = git.diff(parent, candidate, template.diff_context_lines)
-            problems = check_limits(policy, files, diff_text)
+            problems = check_limits(policy, files, inputs["diff_text"])
             if problems:
                 raise StepFailed("; ".join(problems))
-            full_files = {}
-            if template.include_full_files:
-                for f in files:
-                    if f["status"] != "D":
-                        text = git.show_file(candidate, f["path"], template.max_file_bytes)
-                        if text is not None:
-                            full_files[f["path"]] = text
-            changed = {f["path"] for f in files}
-            context = {}
-            for path in select_context_files(template, git.ls_tree(candidate), changed):
-                text = git.show_file(candidate, path, template.max_file_bytes)
-                if text is not None:
-                    context[path] = text
+            # The attestor rebuilds this same PR from the bundle (dosr_git.pr_inputs).
             pr = build_pr(
                 template=template,
                 repo=cfg,
                 parent_git_oid=canonical_q,
                 candidate_git_oid=qualify_oid(fmt, candidate),
-                commits=git.commits_between(parent, candidate),
-                files=files,
-                diff_text=diff_text,
-                full_files=full_files,
-                context_files=context,
+                **inputs,
             )
             markdown = render_markdown(pr)
             metrics = pr_metrics(pr, markdown)
@@ -470,7 +468,8 @@ class Submission:
             self._emit()
 
         try:
-            call = self.attestor.submit_review(request_bytes, policy_bytes, bundle_bytes, on_uploaded=on_uploaded)
+            call = self.attestor.submit_review(request_bytes, policy_bytes, bundle_bytes, on_uploaded=on_uploaded,
+                                               provider_key=provider_key)
         except Exception as e:
             if isinstance(e, AttestorError) and e.response_bytes is not None:
                 transfer["response_bytes"] = e.response_bytes
@@ -492,6 +491,9 @@ class Submission:
             self.decision = {
                 "approved": approved,
                 "summary": result.get("summary", ""),
+                "issues": result.get("issues", []),
+                "model": "{provider}/{model}@{model_version}".format(**{
+                    k: response.get("attestation", {}).get(k, "?") for k in ("provider", "model", "model_version")}),
                 "attestor_key_id": response.get("attestation", {}).get("attestor_key_id"),
                 "signer": response.get("signature", {}).get("signer"),
                 "expires_at": response.get("attestation", {}).get("expires_at"),

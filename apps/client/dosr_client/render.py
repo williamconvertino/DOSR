@@ -98,6 +98,9 @@ def result_view(snap: dict) -> Group:
     body.add_row("Decision", Text(f" {label} ", style=style))
     if decision:
         body.add_row("Summary", decision.get("summary", ""))
+        if decision.get("issues") and not decision.get("approved"):
+            body.add_row("Issues", "\n".join(f"• {i}" for i in decision["issues"]))
+        body.add_row("Model", decision.get("model", ""))
         body.add_row("Attestor", f"{decision.get('attestor_key_id')} ({decision.get('signer')})")
         if decision.get("expires_at"):
             body.add_row("Expires", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(decision["expires_at"])))

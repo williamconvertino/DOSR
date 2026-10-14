@@ -167,6 +167,7 @@ async function refreshRepo() {
     <span>Accepted PRs <code>${r.accepted_transitions ?? 0}</code></span>
     <span>Repo ID <code title="${esc(r.repo_id)}">${esc(r.repo_id.slice(0, 18))}…</code></span>`;
   $("#changes-count").textContent = r.changes.length || "";
+  $("#commit-form").hidden = !r.changes.length;
 
   const models = r.approved_models || [];
   const p = activeProfile();
@@ -289,6 +290,18 @@ async function loadDiff() {
   $("#diff").innerHTML = renderDiff(d.diff);
 }
 
+async function commitChanges(ev) {
+  ev.preventDefault();
+  const message = $("#commit-input").value.trim();
+  if (!message) { toast("Write a commit message first", true); return; }
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(ui.repoId)}/commit`, { method: "POST", body: { message } });
+    $("#commit-input").value = "";
+    toast(`Committed ${r.commit.slice(0, 10)}. Submit PR sends it to DOSR.`);
+    await Promise.all([loadDiff(), refreshRepo()]);
+  } catch (e) { toast(e.message, true); }
+}
+
 async function discardChanges() {
   if (!armed("discard", $("#discard-btn"), "Click again to discard")) return;
   try {
@@ -337,6 +350,9 @@ function renderResult(job, target) {
   const kv = [];
   if (d) {
     kv.push(["Summary", esc(d.summary)]);
+    if (!d.approved && d.issues && d.issues.length) {
+      kv.push(["Issues", `<ul class="issues">${d.issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`]);
+    }
     kv.push(["Attestor", `${esc(d.attestor_key_id)} <span class="muted">${esc(d.signer)}</span>`]);
     kv.push(["Network", `upload ${fmtMs(d.upload_ms)} · server ${fmtMs(d.server_wait_ms)}`]);
     if (d.expires_at) kv.push(["Expires", new Date(d.expires_at * 1000).toLocaleString()]);

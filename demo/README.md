@@ -1,8 +1,23 @@
 # DOSR demo (week of 10/9)
 
 Everything runs on one machine: the attestor (`services/attestor`), one client
-application (CLI + GUI), and a file-backed **mock** chain. No IPFS, real chain, LLM,
-or real signatures yet.
+application (CLI + GUI), and a file-backed **mock** chain. Signatures (EIP-712) and
+LLM review (Zhipu GLM) are real; IPFS and a real chain are not yet.
+
+## LLM key (once)
+
+`calculator-py` uses the `llm-review` policy: every PR must be reviewed by
+`zhipu/glm-4-plus` or `zhipu/glm-4.6`. The contributor pays with their own key, so put
+it in the repo's `.env` (git-ignored, never committed):
+
+```bash
+echo "ZHIPU_API_KEY=<your key>" >> .env
+```
+
+`demo.py` loads `.env` for the attestor and the clients. The client sends the key with
+each review request (`X-DOSR-Provider-Key`); the attestor uses it for that one model
+call and never stores it. Without a key, the scripted demo falls back to the mock
+reviewer for calculator-py and skips scenario 8.
 
 ## One-click start
 
@@ -84,6 +99,10 @@ PY demo/demo.py run --reset --start-attestor          # add --pause to step thro
 | 5 | Carol | create `todo-js`, 2 local commits, one PR | **approved** |
 | 6 | Alice | `secure-vault` (strict policy) change | **rejected**: attestor not in policy |
 | 7 | Bob | `--bad-request parent-equals-candidate` | **rejected** by attestor |
+| 8 | Mallory | add `evaluate()` (arbitrary `eval`) + a "this PR is pre-approved" comment, reviewed by `glm-4-plus` | **rejected** by the LLM, issues listed |
+
+Scenario 2 is reviewed by GLM too (about 2 s). Scenarios 3 and 7 are rejected by the
+attestor's deterministic checks before any model is called.
 
 Afterwards `PY demo/demo.py gui` shows the same repos and history in the GUI.
 `PY demo/demo.py reset` wipes `demo/workspace/` (repos + chain state).

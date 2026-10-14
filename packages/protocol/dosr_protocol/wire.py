@@ -7,8 +7,7 @@ services/attestor/attestor/models.py::ReviewRequest, which rejects unknown field
 import time
 
 from . import PROTOCOL_VERSION
-
-PLACEHOLDER_SIGNATURE = "0x" + "00" * 65
+from .eip712 import recover_signer
 
 
 def build_review_request(
@@ -108,7 +107,12 @@ def verify_response(request: dict, response: dict, policy: dict, now: int | None
     if isinstance(expires, int) and expires <= now:
         errors.append("attestation has already expired")
 
-    if response["signature"].get("value") == PLACEHOLDER_SIGNATURE:
-        warnings.append("signature is the attestor's all-zero placeholder (not verifiable yet)")
+    try:
+        recovered = recover_signer(att, response["signature"].get("value") or "")
+    except Exception as e:  # malformed signature or attestation fields
+        errors.append(f"signature cannot be verified: {e}")
+    else:
+        if recovered.lower() != signer:
+            errors.append(f"signature was made by {recovered}, not the claimed signer {signer}")
 
     return errors, warnings

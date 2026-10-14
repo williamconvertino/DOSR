@@ -1,0 +1,145 @@
+{
+  "description": "EIP-712 test vector for DOSR attestations. Any implementation (Python, Solidity, ...) must reproduce every hash below from `attestation`, and recover `signer` from `signature`. Regenerate if dosr_protocol/eip712.py changes. The private key is Hardhat's public test account #1: never use it outside local development.",
+  "private_key": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+  "signer": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "attestation": {
+    "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+    "chain_id": 31337,
+    "verifying_contract": "0x4444444444444444444444444444444444444444",
+    "policy_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parent_git_oid": "sha1:1111111111111111111111111111111111111111",
+    "candidate_git_oid": "sha1:2222222222222222222222222222222222222222",
+    "bundle_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bundle_cid": "bafybeigdyrzt-example-cid-replace-with-real-value",
+    "provider": "mock",
+    "model": "deterministic-reviewer-v1",
+    "model_version": "1",
+    "approved": true,
+    "request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "review_input_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "issued_at": 1790960400,
+    "expires_at": 1790964000,
+    "attestor_key_id": "local-dev-attestor-1"
+  },
+  "typed_data": {
+    "types": {
+      "EIP712Domain": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "type": "string"
+        },
+        {
+          "name": "chainId",
+          "type": "uint256"
+        },
+        {
+          "name": "verifyingContract",
+          "type": "address"
+        }
+      ],
+      "Attestation": [
+        {
+          "name": "repoId",
+          "type": "bytes32"
+        },
+        {
+          "name": "policyHash",
+          "type": "bytes32"
+        },
+        {
+          "name": "parentGitOid",
+          "type": "bytes32"
+        },
+        {
+          "name": "candidateGitOid",
+          "type": "bytes32"
+        },
+        {
+          "name": "bundleSha256",
+          "type": "bytes32"
+        },
+        {
+          "name": "bundleCid",
+          "type": "string"
+        },
+        {
+          "name": "provider",
+          "type": "string"
+        },
+        {
+          "name": "model",
+          "type": "string"
+        },
+        {
+          "name": "modelVersion",
+          "type": "string"
+        },
+        {
+          "name": "approved",
+          "type": "bool"
+        },
+        {
+          "name": "requestHash",
+          "type": "bytes32"
+        },
+        {
+          "name": "reviewInputHash",
+          "type": "bytes32"
+        },
+        {
+          "name": "responseHash",
+          "type": "bytes32"
+        },
+        {
+          "name": "issuedAt",
+          "type": "uint64"
+        },
+        {
+          "name": "expiresAt",
+          "type": "uint64"
+        },
+        {
+          "name": "attestorKeyId",
+          "type": "string"
+        }
+      ]
+    },
+    "primaryType": "Attestation",
+    "domain": {
+      "name": "DOSR",
+      "version": "0.1",
+      "chainId": 31337,
+      "verifyingContract": "0x4444444444444444444444444444444444444444"
+    },
+    "message": {
+      "repoId": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
+      "policyHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "parentGitOid": "0x1111111111111111111111111111111111111111000000000000000000000000",
+      "candidateGitOid": "0x2222222222222222222222222222222222222222000000000000000000000000",
+      "bundleSha256": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundleCid": "bafybeigdyrzt-example-cid-replace-with-real-value",
+      "provider": "mock",
+      "model": "deterministic-reviewer-v1",
+      "modelVersion": "1",
+      "approved": true,
+      "requestHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reviewInputHash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "responseHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "issuedAt": 1790960400,
+      "expiresAt": 1790964000,
+      "attestorKeyId": "local-dev-attestor-1"
+    }
+  },
+  "domain_type_string": "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+  "attestation_type_string": "Attestation(bytes32 repoId,bytes32 policyHash,bytes32 parentGitOid,bytes32 candidateGitOid,bytes32 bundleSha256,string bundleCid,string provider,string model,string modelVersion,bool approved,bytes32 requestHash,bytes32 reviewInputHash,bytes32 responseHash,uint64 issuedAt,uint64 expiresAt,string attestorKeyId)",
+  "attestation_type_hash": "0x8769101b53785f9f360ecc4dbe63f0c4dbdc67ead5676fc50180d84422c98c40",
+  "domain_separator": "0x7d5d47c17ead585f03e52b76571edd8973ec11a822455ee1b7ed8db18e936ee8",
+  "struct_hash": "0x2b1990dac537579f383a9af0bc4507e2fa47aab69f763035837a25eb8deb03c2",
+  "digest": "0x320ebcc9caa112e6d4fd0b7a2b9714e8b7ed26c685b826548e1a0ba3cf6e6047",
+  "signature": "0xbfcf78235596542daf08548dfba88a0939da4fa4b19bd91c8418643f24a082c5365d3bbed93fcfd395dac91d26bbd7f42466c44694c4acb1cbdb0bdbddd96a201c"
+}

@@ -1,8 +1,9 @@
 """Canonical serialization, hashing, and identifier helpers.
 
-`canonical_json` produces RFC 8785 (JCS) output for the JSON values DOSR uses
-(objects, arrays, strings, integers, booleans, null). Floats are rejected rather
-than risk a JCS number-formatting mismatch; no DOSR payload needs them.
+`canonical_json` is sorted-key, compact, UTF-8 JSON. It equals RFC 8785 (JCS)
+output for the values it accepts, and rejects the inputs where Python and JCS
+would differ: floats, integers outside +-(2**53 - 1), and non-ASCII object keys.
+See docs/HASHING.md.
 """
 
 import hashlib
@@ -13,19 +14,28 @@ import time
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
-def _reject_floats(value):
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _check_jcs_safe(value):
     if isinstance(value, float):
         raise TypeError("canonical_json does not support floats")
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > MAX_SAFE_INTEGER:
+        # JCS serializes numbers as IEEE-754 doubles; larger integers would change.
+        raise TypeError(f"canonical_json integer {value} is outside +-(2**53 - 1)")
     if isinstance(value, dict):
-        for v in value.values():
-            _reject_floats(v)
+        for k, v in value.items():
+            if not isinstance(k, str) or not k.isascii():
+                # JCS sorts keys by UTF-16 code units, Python by code points.
+                raise TypeError(f"canonical_json object keys must be ASCII strings, got {k!r}")
+            _check_jcs_safe(v)
     elif isinstance(value, (list, tuple)):
         for v in value:
-            _reject_floats(v)
+            _check_jcs_safe(v)
 
 
 def canonical_json(value) -> bytes:
-    _reject_floats(value)
+    _check_jcs_safe(value)
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")

@@ -90,6 +90,10 @@
               <button class="btn btn-small" onclick="loadDiff()">Refresh</button>
             </div>
           </div>
+          <form id="commit-form" class="commit-bar" onsubmit="commitChanges(event)" hidden>
+            <input id="commit-input" placeholder="Commit message for your uncommitted changes" aria-label="Commit message">
+            <button class="btn btn-small" type="submit">Commit</button>
+          </form>
           <pre id="diff" class="diff"></pre>
         </div>
 
@@ -98,7 +102,7 @@
           <div class="submit-grid">
             <form id="submit-form" class="card" onsubmit="startSubmit(event)">
               <h3>Propose a change</h3>
-              <label>Commit message <span class="muted small">(used if there are uncommitted changes)</span>
+              <label>Commit message <span class="muted small">(only if you have uncommitted changes; otherwise your committed local HEAD is submitted)</span>
                 <textarea id="commit-msg" rows="3" placeholder="Describe your change"></textarea>
               </label>
               <label>Review model
