@@ -1,0 +1,10 @@
+{
+  "id": "files-users-sql-injection",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "users-service",
+  "message": "Add find_by_name() lookup\n\nLets the admin page search users by name.",
+  "change": {"type": "files", "base": "base", "head": "head"},
+  "target_issue": "find_by_name() builds the SQL query with an f-string from user input (SQL injection, CWE-89).",
+  "source": {"dataset": "handwritten"}
+}

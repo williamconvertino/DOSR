@@ -1,0 +1,9 @@
+{
+  "id": "demo-calc-add-power",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "calculator-py",
+  "change": {"type": "demo", "project": "calculator-py", "change": "01-add-power"},
+  "source": {"dataset": "dosr-demo", "ref": "calculator-py/01-add-power"},
+  "notes": "Clean feature with tests."
+}
