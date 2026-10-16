@@ -1,0 +1,13 @@
+{
+  "name": "todo-js",
+  "description": "Minimal JavaScript todo-list module. Standard policy, two-commit PR demo.",
+  "language": "javascript",
+  "preset": "standard",
+  "demo_changes": [
+    {
+      "id": "01-complete-items",
+      "message": "Support completing todos and listing open items",
+      "expect": "approved"
+    }
+  ]
+}

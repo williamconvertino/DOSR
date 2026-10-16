@@ -1,0 +1,14 @@
+{
+  "name": "secure-vault",
+  "description": "Security-sensitive secrets helper. Strict policy: two pinned models and two remote attestors.",
+  "language": "python",
+  "preset": "strict",
+  "demo_changes": [
+    {
+      "id": "01-key-rotation",
+      "message": "Add key rotation helper",
+      "expect": "rejected",
+      "note": "The strict policy trusts attestor-a/attestor-b only, so the local dev attestor refuses to approve"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Mallory",
+  "email": "mallory@dosr.demo",
+  "description": "Adversarial client: requests review from a model the policy does not approve",
+  "review_model": { "provider": "mock", "model": "always-approve", "version": "1" },
+  "color": "#c92a2a"
+}

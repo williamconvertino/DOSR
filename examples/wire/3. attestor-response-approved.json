@@ -3,11 +3,130 @@
   "request_id": "01J9DOSRDEMO00000000000001",
   "result": {
     "approved": true,
-    "summary": "No policy-blocking issues were found in the proposed transition."
+    "summary": "No policy-blocking issues were found in the proposed transition.",
+    "issues": []
   },
   "evidence": {
     "canonical_request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "model_response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    "model_response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "checks": [
+      {
+        "name": "policy_hash_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "model_is_approved",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "attestor_is_listed",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "attestor_address_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "prompt_template_is_approved",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "decision_schema_is_known",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "parent_git_oid_format",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "candidate_git_oid_format",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "candidate_differs_from_parent",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "bundle_format_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "bundle_hash_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "chain_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "repository_exists",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "policy_hash_matches_genesis",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "parent_is_canonical_head",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "bundle_contains_transition",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "protected_paths_unchanged",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "policy_file_matches",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "within_max_changed_files",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "within_max_patch_bytes",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "model_output_is_valid",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "derived_review_input": {
+      "pr_hash": "0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+      "commit_count": 1,
+      "changed_files": [
+        "src/example.py",
+        "tests/test_example.py"
+      ],
+      "changed_file_count": 2,
+      "patch_bytes": 4812,
+      "patch_sha256": "sha256:abababababababababababababababababababababababababababababababab"
+    }
   },
   "attestation": {
     "repo_id": "0x8fb24a4c6f4e2f8cbe6b43560000000000000000000000000000000000000001",
@@ -23,6 +142,7 @@
     "model_version": "1",
     "approved": true,
     "request_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "review_input_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "response_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "issued_at": 1790960400,
     "expires_at": 1790964000,
@@ -30,7 +150,7 @@
   },
   "signature": {
     "scheme": "eip712-secp256k1",
-    "signer": "0x1111111111111111111111111111111111111111",
-    "value": "0x<65-byte-signature>"
+    "signer": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "value": "0xbfcf78235596542daf08548dfba88a0939da4fa4b19bd91c8418643f24a082c5365d3bbed93fcfd395dac91d26bbd7f42466c44694c4acb1cbdb0bdbddd96a201c"
   }
 }

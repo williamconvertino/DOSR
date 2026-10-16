@@ -1,28 +1,40 @@
 """DOSR attestor HTTP server.
 
-Run from services/attestor/:
+Run from services/attestor/ (settings: see attestor/config.py):
     uvicorn attestor.main:app --port 8080 --reload
 """
 
 import json
+from functools import lru_cache
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Path, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ValidationError
+from starlette.concurrency import run_in_threadpool
 
-from . import review as reviewer
+from .config import Settings
+from .gitcheck import MissingPrerequisites
 from .models import PROTOCOL_VERSION, Policy, ReviewRequest
+from .review import Attestor
+from .reviewers import MissingProviderKey, ReviewerError
+from .signing import SCHEME
 
 app = FastAPI(title="DOSR Attestor", version=PROTOCOL_VERSION)
 
 
-def _parse(raw: bytes, model: type[BaseModel], field: str) -> BaseModel:
+@lru_cache
+def get_attestor() -> Attestor:
+    # Tests swap this out with app.dependency_overrides[get_attestor].
+    return Attestor(Settings.from_env())
+
+
+def _parse(raw: bytes, model: type[BaseModel], field: str) -> tuple[BaseModel, dict]:
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise HTTPException(400, f"`{field}` is not valid JSON: {e}")
     try:
-        return model.model_validate(data)
+        return model.model_validate(data), data
     except ValidationError as e:
         raise HTTPException(
             422, {"field": field, "errors": e.errors(include_url=False, include_context=False)}
@@ -40,16 +52,18 @@ def health():
 
 
 @app.get("/v1/keys")
-def keys():
-    return {
-        "keys": [
-            {
-                "key_id": reviewer.ATTESTOR_KEY_ID,
-                "scheme": "eip712-secp256k1",
-                "address": reviewer.ATTESTOR_ADDRESS,
-            }
-        ]
-    }
+def keys(attestor: Attestor = Depends(get_attestor)):
+    return {"keys": [{"key_id": attestor.key_id, "scheme": SCHEME, "address": attestor.signer.address}]}
+
+
+@app.get("/v1/repos/{repo_id}/commits/{git_oid}")
+def has_commit(
+    repo_id: str = Path(pattern=r"^0x[0-9a-fA-F]{64}$"),
+    git_oid: str = Path(pattern=r"^(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$"),
+    attestor: Attestor = Depends(get_attestor),
+):
+    """Whether the attestor already holds this commit, i.e. a thin bundle based on it will work."""
+    return {"present": attestor.cache.has_commit(repo_id, git_oid.partition(":")[2])}
 
 
 @app.post("/v1/reviews")
@@ -57,13 +71,31 @@ async def create_review(
     request: UploadFile = File(..., description="JSON matching examples/wire/1. attestor-request.json"),
     policy: UploadFile = File(..., description="Immutable policy JSON (.dosr/policy.json)"),
     bundle: UploadFile = File(..., description="Git bundle for parent -> candidate"),
+    attestor: Attestor = Depends(get_attestor),
+    x_dosr_provider_key: str | None = Header(
+        None, description="Contributor's API key for the review model's provider; used once, never stored"),
 ):
-    raw_request = await request.read()
-    req = _parse(raw_request, ReviewRequest, "request")
-    pol = _parse(await policy.read(), Policy, "policy")
+    req, raw_req = _parse(await request.read(), ReviewRequest, "request")
+    pol, raw_pol = _parse(await policy.read(), Policy, "policy")
 
-    # TODO: verify bundle sha256 and that it contains parent/candidate.
-    if not await bundle.read():
+    limit = attestor.settings.max_bundle_bytes
+    bundle_bytes = await bundle.read(limit + 1)
+    if not bundle_bytes:
         raise HTTPException(400, "`bundle` is empty")
+    if len(bundle_bytes) > limit:
+        raise HTTPException(413, f"`bundle` exceeds {limit} bytes")
 
-    return reviewer.review(req, pol, raw_request)
+    try:
+        # Git work is blocking; keep it off the event loop.
+        return await run_in_threadpool(attestor.review, req, raw_req, pol, raw_pol, bundle_bytes,
+                                       x_dosr_provider_key)
+    except MissingProviderKey as e:
+        raise HTTPException(400, str(e))
+    except ReviewerError as e:
+        raise HTTPException(502, f"review model unavailable: {e}")
+    except MissingPrerequisites as e:
+        raise HTTPException(409, {
+            "code": "missing_prerequisites",
+            "message": f"{e}; send a full bundle",
+            "missing": e.missing,
+        })

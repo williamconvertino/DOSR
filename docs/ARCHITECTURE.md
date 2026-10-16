@@ -17,6 +17,9 @@ The Git commit OID identifies repository content/history. An IPFS CID is a trans
 
 ## Recommended signed domain
 
+Implemented in v0.1; the exact fields, encodings, and hash rules are in
+[HASHING.md](HASHING.md).
+
 Use EIP-712 with at least:
 - protocol version
 - chain ID

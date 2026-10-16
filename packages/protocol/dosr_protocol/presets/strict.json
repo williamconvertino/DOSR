@@ -1,0 +1,42 @@
+{
+  "protocol_version": "0.1",
+  "policy_id": "dosr-policy:strict-demo:v1",
+  "git": {
+    "object_format": "sha1"
+  },
+  "review": {
+    "approved_models": [
+      {
+        "provider": "provider-a",
+        "model": "review-model-a",
+        "version": "pinned-version"
+      },
+      {
+        "provider": "provider-b",
+        "model": "review-model-b",
+        "version": "pinned-version"
+      }
+    ],
+    "minimum_approvals": 2,
+    "prompt_template": "security-sensitive-review-v1",
+    "decision_schema": "dosr-review-decision-v1",
+    "max_changed_files": 20,
+    "max_patch_bytes": 100000
+  },
+  "attestors": [
+    {
+      "key_id": "attestor-a",
+      "scheme": "eip712-secp256k1",
+      "address": "0x2222222222222222222222222222222222222222"
+    },
+    {
+      "key_id": "attestor-b",
+      "scheme": "eip712-secp256k1",
+      "address": "0x3333333333333333333333333333333333333333"
+    }
+  ],
+  "storage": {
+    "bundle_format": "git-bundle-v1",
+    "distribution": "ipfs"
+  }
+}
