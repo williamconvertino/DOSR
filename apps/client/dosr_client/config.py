@@ -16,6 +16,7 @@ demo/clients/.
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -31,6 +32,23 @@ DOSR_DIR = ".dosr"
 POLICY_FILE = f"{DOSR_DIR}/policy.json"
 REPO_FILE = f"{DOSR_DIR}/repo.json"
 PROTECTED_PATHS = (POLICY_FILE, REPO_FILE)
+
+# Providers that need no API key; every other provider's key is read from
+# <PROVIDER>_API_KEY (e.g. ZHIPU_API_KEY, DEEPSEEK_API_KEY). The contributor sends it
+# with each review because they pay for their own inference; the attestor uses it for
+# that one call and never stores it.
+KEYLESS_PROVIDERS = {"mock"}
+
+
+def provider_key_env(provider: str) -> str | None:
+    if provider in KEYLESS_PROVIDERS:
+        return None
+    return re.sub(r"[^A-Za-z0-9]", "_", provider).upper() + "_API_KEY"
+
+
+def provider_api_key(provider: str) -> str | None:
+    env = provider_key_env(provider)
+    return (os.environ.get(env) or None) if env else None
 
 
 class ConfigError(RuntimeError):

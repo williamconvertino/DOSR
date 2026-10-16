@@ -65,6 +65,8 @@ def test_happy_path_approved_and_head_advances(tmp_path, chain, alice, attestor)
     assert art["response"]["attestation"]["candidate_git_oid"] == new_head
     assert art["pr"]["stats"]["changed_files"] == 1
     assert "def sub" in art["pr_markdown"]
+    # The attestor rebuilt the identical PR from the bundle rather than trusting ours.
+    assert art["response"]["evidence"]["derived_review_input"]["pr_hash"] == art["pr"]["pr_hash"]
 
 
 def test_second_pr_builds_on_new_head(tmp_path, chain, alice, attestor):
@@ -178,13 +180,27 @@ def test_listener_sees_progress(tmp_path, chain, alice, attestor):
     assert {"preflight", "bundle", "upload", "await", "register"} <= set(seen)
 
 
-@pytest.mark.parametrize("mode", ["full", "thin"])
-def test_bundle_modes(tmp_path, chain, alice, attestor, mode):
+def test_full_bundle(tmp_path, chain, alice, attestor):
     repo, _ = make_repo(tmp_path, chain, alice)
     edit(repo)
-    sub = submit(repo, alice, attestor, chain, SubmitOptions(message="x", bundle_mode=mode))
+    sub = submit(repo, alice, attestor, chain, SubmitOptions(message="x", bundle_mode="full"))
     assert sub.outcome == "approved"
-    assert sub.info["bundle"]["mode"] == mode
+    assert sub.info["bundle"]["mode"] == "full"
+
+
+def test_thin_bundle_after_attestor_has_parent(tmp_path, chain, alice, attestor):
+    repo, _ = make_repo(tmp_path, chain, alice)
+    edit(repo)
+    # The attestor has never seen this repository, so the client falls back to full.
+    first = submit(repo, alice, attestor, chain, SubmitOptions(message="one", bundle_mode="thin"))
+    assert first.outcome == "approved"
+    assert first.info["bundle"]["mode"] == "full"
+    assert any("full bundle instead of thin" in w for w in first.warnings)
+    # Now it holds the new canonical HEAD, so a thin bundle on top of it works.
+    edit(repo, "src/more.py", "X = 1\n")
+    second = submit(repo, alice, attestor, chain, SubmitOptions(message="two", bundle_mode="thin"))
+    assert second.outcome == "approved", second.errors
+    assert second.info["bundle"]["mode"] == "thin"
 
 
 @pytest.mark.parametrize(
@@ -224,3 +240,11 @@ def test_sizes_and_word_counts_recorded(tmp_path, chain, alice, attestor):
     assert m["total"]["words"] == len(pr_md.split())
     assert m["total"]["est_tokens"] == round(len(pr_md) / 4)
     assert m["sections"]["diff"]["words"] > 0
+
+
+def test_provider_key_env_names():
+    from dosr_client.config import provider_key_env
+
+    assert provider_key_env("mock") is None
+    assert provider_key_env("zhipu") == "ZHIPU_API_KEY"
+    assert provider_key_env("deep-seek") == "DEEP_SEEK_API_KEY"

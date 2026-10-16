@@ -12,6 +12,7 @@ from importlib import resources
 PRESETS = {
     "standard": "Single mock reviewer, single local attestor (mirrors examples/repos/hello-python)",
     "strict": "Two pinned models, two attestors, tighter limits (mirrors examples/repos/strict-demo)",
+    "llm-review": "Real LLM review: GLM-4-Plus or GLM-4.6 (Zhipu), security + correctness prompt, local attestor",
 }
 
 _TOP_LEVEL_KEYS = {"protocol_version", "policy_id", "git", "review", "attestors", "storage"}

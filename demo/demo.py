@@ -36,6 +36,18 @@ def _require_deps():
         sys.exit(1)
 
 
+def load_dotenv() -> None:
+    """Export the repo's .env (gitignored; e.g. ZHIPU_API_KEY) to this process and the
+    attestor/client processes it starts. Values already in the environment win."""
+    path = ROOT / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text("utf-8").splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key and not key.startswith("#") and value.strip():
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def attestor_url(port: int) -> str:
     return f"http://127.0.0.1:{port}"
 
@@ -49,10 +61,16 @@ def attestor_up(port: int) -> bool:
         return False
 
 
+def attestor_env() -> dict:
+    # The attestor reads canonical HEAD / policy hashes from the same mock chain as the clients.
+    return {**os.environ, "DOSR_CHAIN_STATE": str(CHAIN_STATE),
+            "ATTESTOR_CACHE_DIR": str(WORKSPACE / ".attestor-cache")}
+
+
 def start_attestor_process(port: int) -> subprocess.Popen:
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "attestor.main:app", "--port", str(port), "--log-level", "warning"],
-        cwd=ATTESTOR_DIR,
+        cwd=ATTESTOR_DIR, env=attestor_env(),
     )
     for _ in range(60):
         if attestor_up(port):
@@ -70,7 +88,8 @@ def start_attestor_process(port: int) -> subprocess.Popen:
 def cmd_attestor(args):
     print(f"Starting DOSR attestor on {attestor_url(args.port)} (docs: {attestor_url(args.port)}/docs)")
     return subprocess.call(
-        [sys.executable, "-m", "uvicorn", "attestor.main:app", "--port", str(args.port)], cwd=ATTESTOR_DIR
+        [sys.executable, "-m", "uvicorn", "attestor.main:app", "--port", str(args.port)], cwd=ATTESTOR_DIR,
+        env=attestor_env(),
     )
 
 
@@ -188,17 +207,23 @@ def cmd_run(args):
     try:
         # 1. Alice creates calculator-py ---------------------------------------
         meta = seed_meta("calculator-py")
+        # The llm-review policy needs the contributor's GLM key; without one, fall back to the mock reviewer.
+        calc_preset = meta["preset"] if os.environ.get("ZHIPU_API_KEY") else "standard"
         scenario("1. Create repository calculator-py", "Alice",
-                 "git init + seed files + immutable .dosr/policy.json, genesis commit, register on the mock chain.")
+                 "git init + seed files + immutable .dosr/policy.json, genesis commit, register on the mock chain. "
+                 + ("Policy llm-review: PRs must be reviewed by zhipu/glm-4-plus or zhipu/glm-4.6."
+                    if calc_preset == "llm-review" else "No ZHIPU_API_KEY: using the standard (mock reviewer) policy."))
         as_client("alice", "init", str(WORKSPACE / "calculator-py"), "--name", "calculator-py",
-                  "--description", meta["description"], "--preset", meta["preset"],
+                  "--description", meta["description"], "--preset", calc_preset,
                   "--seed", str(PROJECTS / "calculator-py" / "files"))
         results.append(("Create calculator-py", "Alice", "created", "created", None))
 
         # 2. Bob proposes a good change ----------------------------------------
         ch = meta["demo_changes"][0]
         scenario("2. Propose a change (power/modulo)", "Bob",
-                 "Edit files, then `dosr submit -m`: commit → bundle → PR → attestor → verify → register.")
+                 "Edit files, then `dosr submit -m`: commit → bundle → PR → attestor → verify → register. The "
+                 "attestor rebuilds the PR from the bundle and has the policy's model review it (Bob pays with "
+                 "his own API key).")
         apply_change("calculator-py", ch["id"], "calculator-py")
         as_client("bob", "status", repo="calculator-py")
         as_client("bob", "submit", "-m", ch["message"], repo="calculator-py")
@@ -268,6 +293,25 @@ def cmd_run(args):
         record("Bob: bad request (parent = candidate)", "Bob", "rejected", "calculator-py")
         git.run("reset", "-q", "--hard", "HEAD~1")
 
+        # 8. Backdoor caught by the LLM review --------------------------------------------
+        ch = seed_meta("calculator-py")["demo_changes"][2]
+        if calc_preset != "llm-review":
+            console.print()
+            console.print(Rule("[bold]8. LLM review scenario skipped"))
+            console.print("[yellow]calculator-py ran on the mock reviewer. Set ZHIPU_API_KEY (environment or the "
+                          "repo's .env) to have GLM review its PRs.[/]")
+        else:
+            scenario("8. Backdoor caught by the LLM review", "Mallory",
+                     "Mallory adds evaluate(), which runs arbitrary Python through eval() with full builtins, and a "
+                     "comment telling the reviewer the PR is pre-approved. She uses the approved zhipu/glm-4-plus; "
+                     "the attestor rebuilds the PR from the bundle, GLM rejects it, and the signed rejection lists "
+                     "the issues it found.")
+            apply_change("calculator-py", ch["id"], "calculator-py")
+            as_client("mallory", "submit", "-m", ch["message"], "--model", "zhipu/glm-4-plus@api-v4",
+                      repo="calculator-py")
+            record("Mallory: eval() backdoor via GLM", "Mallory", ch["expect"], "calculator-py")
+            git.run("reset", "-q", "--hard", "HEAD~1")
+
         # Summary -------------------------------------------------------------------
         console.print()
         console.print(Rule("[bold]Summary"))
@@ -290,6 +334,7 @@ def cmd_run(args):
 
 
 def main():
+    load_dotenv()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--attestor-port", type=int, default=8080)
     sub = ap.add_subparsers(dest="cmd", required=True)

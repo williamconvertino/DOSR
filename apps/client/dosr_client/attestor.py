@@ -81,12 +81,17 @@ class AttestorClient:
     def keys(self) -> dict:
         return self._get("/v1/keys")
 
+    def has_commit(self, repo_id: str, git_oid: str) -> bool:
+        """Whether the attestor can open a thin bundle whose prerequisite is `git_oid`."""
+        return bool(self._get(f"/v1/repos/{repo_id}/commits/{git_oid}")["present"])
+
     def submit_review(
         self,
         request_bytes: bytes,
         policy_bytes: bytes,
         bundle_bytes: bytes,
         on_uploaded: Callable[[], None] | None = None,
+        provider_key: str | None = None,
     ) -> ReviewCall:
         boundary, chunks = _multipart(
             [
@@ -114,6 +119,8 @@ class AttestorClient:
                     "Content-Type": f"multipart/form-data; boundary={boundary}",
                     "Content-Length": str(total),
                     "Accept": "application/json",
+                    # The contributor's own model API key (they pay for the review).
+                    **({"X-DOSR-Provider-Key": provider_key} if provider_key else {}),
                 },
             )
         except httpx.HTTPError as e:

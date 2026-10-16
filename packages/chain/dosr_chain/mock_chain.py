@@ -1,12 +1,12 @@
 """File-backed stand-in for the DOSR repository contract.
 
-MOCK ONLY: there is no EVM, no gas, and no signature verification (the attestor
-still returns a placeholder signature). It exists so the client has a canonical
+MOCK ONLY: there is no EVM and no gas. It exists so the client has a canonical
 HEAD to build PRs on top of, and it enforces the same deterministic checks the
 real contract will (contracts/README.md):
 
 - repository registered with an immutable policy hash
 - attestation signer/key listed in the genesis policy
+- EIP-712 signature recovers to that signer (binds every attestation field)
 - attestation approved and not expired
 - attested parent == current HEAD (first registered wins)
 
@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from dosr_protocol.canonical import canonical_json, policy_hash, sha256_0x
+from dosr_protocol.eip712 import recover_signer
 
 
 class ChainError(RuntimeError):
@@ -114,7 +115,12 @@ class MockChain:
         signers = {(a["key_id"], a["address"].lower()) for a in repo["attestors"]}
         if (att.get("attestor_key_id"), (sig.get("signer") or "").lower()) not in signers:
             fail("attestor is not approved by the repository policy")
-        # TODO: recover the EIP-712 signer from sig["value"] once the attestor signs.
+        try:
+            recovered = recover_signer(att, sig.get("value") or "")
+        except Exception:
+            fail("attestation signature is malformed")
+        if recovered.lower() != (sig.get("signer") or "").lower():
+            fail("signature does not match the attestation (recovered a different signer)")
         if not att.get("approved"):
             fail("attestation is not an approval")
         if att.get("expires_at", 0) <= now:
