@@ -1,0 +1,4 @@
+results/
+.cache/
+pricing.json
+*.egg-info/

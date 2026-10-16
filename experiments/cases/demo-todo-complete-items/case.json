@@ -1,0 +1,9 @@
+{
+  "id": "demo-todo-complete-items",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "todo-js",
+  "change": {"type": "demo", "project": "todo-js", "change": "01-complete-items"},
+  "source": {"dataset": "dosr-demo", "ref": "todo-js/01-complete-items"},
+  "notes": "The demo submits this as two commits; here it is one commit with the same final tree."
+}
