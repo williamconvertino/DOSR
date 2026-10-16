@@ -1,0 +1,26 @@
+# Built-in PR template. Policies pin template ids, so this file's content must never
+# change: copy it to a new id instead (`dosr template new my-review-v1 --from standard-code-review-v1`).
+# Format reference: dosr_protocol/templates.py
+format = "dosr-pr-template-v1"
+id = "standard-code-review-v1"
+description = "Unified diff (3 lines context), full changed files, README for context"
+
+[context]
+diff_context_lines = 3
+include_full_files = true
+max_file_bytes = 64000
+files = ["README*", "readme*"]
+
+[review]
+instructions = """\
+Review the proposed change for correctness, clarity, and consistency with \
+the existing code. Approve only if the change is coherent, does not break \
+existing behavior, and contains no malicious or obviously harmful code."""
+checklist = [
+    "Change matches the stated intent",
+    "No obvious bugs or regressions",
+    "Tests updated where behavior changes",
+]
+
+# No [[sections]]: the default layout (header, description, commits, changed files,
+# review instructions, diff, full changed files, context files).

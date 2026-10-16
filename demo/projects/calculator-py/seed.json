@@ -1,6 +1,6 @@
 {
   "name": "calculator-py",
-  "description": "Tiny Python calculator library. llm-review policy: every PR is reviewed by an approved GLM model through the attestor.",
+  "description": "Tiny Python calculator library. llm-review policy: every PR is reviewed by an approved GLM model through the attestor, with docs/CONTRIBUTING.md as required context.",
   "language": "python",
   "preset": "llm-review",
   "demo_changes": [
@@ -21,5 +21,10 @@
       "expect": "rejected",
       "note": "evaluate() runs arbitrary Python via eval() with full builtins, and a comment tells the reviewer the PR is pre-approved"
     }
-  ]
+  ],
+  "policy_overrides": {
+    "context_files": [
+      "docs/*.md"
+    ]
+  }
 }

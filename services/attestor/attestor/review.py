@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass
 
 from dosr_protocol.canonical import canonical_json, policy_hash, sha256_0x
 from dosr_protocol.decision import SCHEMAS, DecisionError, build_prompt, parse_decision
-from dosr_protocol.pr_format import PRFormatError, get_template, render_markdown
+from dosr_protocol.pr_format import PRFormatError, render_markdown, template_for_policy
+from dosr_protocol.versions import explain_unapproved, find_approved_model
 
 from . import gitcheck, reviewers as backends
 from .config import Settings
@@ -49,9 +50,13 @@ class Attestor:
         return self.settings.key_id
 
     def review(self, req: ReviewRequest, raw_request: dict, policy: Policy, raw_policy: dict,
-               bundle: bytes, provider_key: str | None = None) -> dict:
+               bundle: bytes, provider_key: str | None = None, client_prompt: str | None = None) -> dict:
         """Raises gitcheck.MissingPrerequisites for a thin bundle the attestor cannot open,
-        and reviewers.ReviewerError if the model cannot be called (nothing is signed)."""
+        and reviewers.ReviewerError if the model cannot be called (nothing is signed).
+
+        `client_prompt` is the prompt the client built and expects to be reviewed. It is
+        never sent to the model: the attestor builds its own from the bundle and rejects
+        the request if the two differ (tampered prompt, wrong template or context)."""
         checks: list[Check] = []
 
         def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -65,9 +70,11 @@ class Attestor:
         # 1. request vs policy --------------------------------------------------
         check("policy_hash_matches", computed_policy_hash == repo.policy_hash,
               f"policy hashes to {computed_policy_hash}, request claims {repo.policy_hash}")
-        approved_models = {(m.provider, m.model, m.version) for m in policy.review.approved_models}
-        check("model_is_approved", (rv.provider, rv.model, rv.model_version) in approved_models,
-              f"model {rv.provider}/{rv.model}@{rv.model_version} is not approved by the policy")
+        # Policy versions may be ranges ("^1.7.1"); the request names one concrete version.
+        approved_models = [m.model_dump() for m in policy.review.approved_models]
+        check("model_is_approved",
+              find_approved_model(approved_models, rv.provider, rv.model, rv.model_version) is not None,
+              explain_unapproved(approved_models, rv.provider, rv.model, rv.model_version))
         check("provider_is_supported", rv.provider in self.reviewers,
               f"this attestor cannot call provider {rv.provider!r}")
         listed = {a.key_id: a.address for a in policy.attestors}
@@ -76,7 +83,8 @@ class Attestor:
                   f"policy lists {self.key_id} as {listed[self.key_id]}, but this attestor signs as "
                   f"{self.signer.address}")
         try:
-            template = get_template(policy.review.prompt_template)
+            template = template_for_policy(policy.review.prompt_template, policy.review.context_files,
+                                           policy.review.template)
             check("prompt_template_is_approved", True)
         except PRFormatError as e:
             template = None
@@ -137,11 +145,18 @@ class Attestor:
 
         # 4. reviewer ----------------------------------------------------------
         review_input_hash = response_hash = NO_HASH
+        prompt = None
+        if all(c.ok for c in checks):
+            prompt = build_prompt(template, render_markdown(transition.pr, template), policy.review.decision_schema)
+            if client_prompt is not None:
+                client_hash = sha256_0x(client_prompt.encode("utf-8"))
+                check("client_prompt_matches", client_hash == sha256_0x(prompt.encode("utf-8")),
+                      f"the client's prompt (sha256 {client_hash[:18]}…) differs from the prompt derived "
+                      "from the bundle and policy")
         failures = [c.detail for c in checks if not c.ok]
         if failures:
             result = {"approved": False, "summary": "Rejected: " + "; ".join(failures), "issues": failures}
         else:
-            prompt = build_prompt(template, render_markdown(transition.pr), policy.review.decision_schema)
             review_input_hash = sha256_0x(prompt.encode("utf-8"))
             raw = self.reviewers[rv.provider].complete(prompt, rv, provider_key)
             response_hash = sha256_0x(raw.encode("utf-8"))

@@ -191,7 +191,8 @@ def open_transition(
         _git(None, "init", "-q", "--bare", f"--object-format={object_format}", str(work), timeout=t)
         cached = cache.path(repo_id) / "objects"
         if cached.is_dir():
-            (work / "objects" / "info" / "alternates").write_text(f"{cached.resolve()}\n")
+            # newline="\n": Windows text mode would write "\r\n", and Git then ignores the path.
+            (work / "objects" / "info" / "alternates").write_text(f"{cached.resolve()}\n", newline="\n")
 
         missing = [p for p in header.prerequisites if not _has_commit(work, p, t)]
         if missing:

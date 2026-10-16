@@ -4,7 +4,7 @@ These are local to the attestor for now; they should move to packages/protocol/
 once the client and server agree on them.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -72,7 +72,7 @@ class PolicyGit(Strict):
 class ApprovedModel(Strict):
     provider: str
     model: str
-    version: str
+    version: str  # exact ("1.7.1", "api-v4") or a range ("^1.7.1"); dosr_protocol.versions
 
 
 class PolicyReview(Strict):
@@ -82,6 +82,10 @@ class PolicyReview(Strict):
     decision_schema: str
     max_changed_files: int = Field(ge=1)
     max_patch_bytes: int = Field(ge=1)
+    # Extra paths/globs added to the template's context files (pr_format.template_for_policy).
+    context_files: list[str] = Field(default_factory=list, max_length=50)
+    # Custom PR template (dosr_protocol.templates), validated by pr_format.get_template.
+    template: dict[str, Any] | None = None
 
 
 class PolicyAttestor(Strict):

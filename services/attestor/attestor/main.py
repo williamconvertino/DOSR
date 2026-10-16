@@ -21,6 +21,8 @@ from .signing import SCHEME
 
 app = FastAPI(title="DOSR Attestor", version=PROTOCOL_VERSION)
 
+MAX_PROMPT_BYTES = 4 * 1024 * 1024
+
 
 @lru_cache
 def get_attestor() -> Attestor:
@@ -71,12 +73,24 @@ async def create_review(
     request: UploadFile = File(..., description="JSON matching examples/wire/1. attestor-request.json"),
     policy: UploadFile = File(..., description="Immutable policy JSON (.dosr/policy.json)"),
     bundle: UploadFile = File(..., description="Git bundle for parent -> candidate"),
+    prompt: UploadFile | None = File(
+        None, description="Optional: the review prompt the client built. Never sent to the model; "
+                          "the request is rejected if it differs from the prompt derived from the bundle"),
     attestor: Attestor = Depends(get_attestor),
     x_dosr_provider_key: str | None = Header(
         None, description="Contributor's API key for the review model's provider; used once, never stored"),
 ):
     req, raw_req = _parse(await request.read(), ReviewRequest, "request")
     pol, raw_pol = _parse(await policy.read(), Policy, "policy")
+
+    client_prompt = None
+    if prompt is not None:
+        try:
+            client_prompt = (await prompt.read(MAX_PROMPT_BYTES + 1)).decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(400, "`prompt` is not UTF-8 text")
+        if len(client_prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+            raise HTTPException(413, f"`prompt` exceeds {MAX_PROMPT_BYTES} bytes")
 
     limit = attestor.settings.max_bundle_bytes
     bundle_bytes = await bundle.read(limit + 1)
@@ -88,7 +102,7 @@ async def create_review(
     try:
         # Git work is blocking; keep it off the event loop.
         return await run_in_threadpool(attestor.review, req, raw_req, pol, raw_pol, bundle_bytes,
-                                       x_dosr_provider_key)
+                                       x_dosr_provider_key, client_prompt)
     except MissingProviderKey as e:
         raise HTTPException(400, str(e))
     except ReviewerError as e:

@@ -5,7 +5,7 @@ development: `http://127.0.0.1:8080`. Interactive docs (generated from the code)
 are at `/docs`; machine-readable schema at `/openapi.json`.
 
 Status: policy, chain state (mock chain), Git bundle, prompt building, model call
-(`mock` or any OpenAI-compatible provider; `zhipu` built in), output parsing and EIP-712 signatures are real —
+(`mock`; built in: `openai`, `anthropic`, `gemini`, `zhipu`; plus any OpenAI-compatible provider), output parsing and EIP-712 signatures are real —
 see [README.md](README.md#not-implemented-yet).
 
 ---
@@ -62,6 +62,7 @@ never stored, logged, hashed, or returned.
 | `request` | Review request JSON | [`examples/wire/1. attestor-request.json`](../../examples/wire/1.%20attestor-request.json) |
 | `policy` | The repository's immutable policy JSON | [`examples/repos/hello-python/.dosr/policy.json`](../../examples/repos/hello-python/.dosr/policy.json) |
 | `bundle` | Git bundle with the candidate and its history back to `parent` (binary). Full, or thin if the attestor has the parent. | — |
+| `prompt` | **Optional.** UTF-8 text: the review prompt the client built (what it expects the model to see). Never sent to the model: the attestor builds its own prompt from the bundle and rejects the request (`client_prompt_matches`) if they differ, before calling the model. Max 4 MB (413). | `prompt.txt` in a client submission |
 
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/reviews \
@@ -95,7 +96,24 @@ curl -X POST http://127.0.0.1:8080/v1/reviews \
 #### `policy` fields
 
 Must match the shape of the files under `examples/repos/*/.dosr/policy.json`.
-Unknown fields are rejected. Notable constraints: `protocol_version` is `"0.1"`;
+Unknown fields are rejected, with these additions (all optional, so existing policies are unchanged):
+
+- `review.approved_models[].version` may be an exact version (`"1.7.1"`, `"api-v4"`) or a
+  **range**: `^1.7.1` (>=1.7.1 <2.0.0), `~1.7.1` (>=1.7.1 <1.8.0), `>=1.7.1`, `>=1.7.1 <1.9`,
+  `1.x`, `*`. The request's `review.model_version` must be one concrete version inside the
+  range; that exact string is what gets signed. Rules: `packages/protocol/dosr_protocol/versions.py`.
+- `review.context_files`: list (max 50) of repository paths/globs added to the template's context
+  files, e.g. `["docs/*.md"]`. Matching files (outside the change) are included in the PR and prompt
+  (`pr_format.template_for_policy`).
+- `review.template`: a custom PR template (the parsed template file, format
+  `dosr-pr-template-v1`; `packages/protocol/dosr_protocol/templates.py`, guide in
+  `demo/templates/README.md`). When present, `review.prompt_template` must equal its `id`, and the
+  id must not be a built-in. Without it, `prompt_template` must name a built-in template. The
+  template decides the collected context, the reviewer instructions, and the PR layout; the
+  attestor rebuilds the PR and prompt with it. An invalid template fails
+  `prompt_template_is_approved` before any model call. PRs record `template_hash` (sha256 of
+  the template's canonical JSON).
+ Notable constraints: `protocol_version` is `"0.1"`;
 `git.object_format` is `sha1` or `sha256`; `review.approved_models` and
 `attestors` must be non-empty; `attestors[].scheme` is `eip712-secp256k1`;
 `storage.bundle_format` is `git-bundle-v1`.
@@ -201,7 +219,7 @@ everything in 1–2 passed; the reviewer is called only if everything passed. An
 failure rejects, and every failure is listed in `summary`.
 
 1. Request vs policy: `policy_hash_matches` (sha256 of canonical policy JSON),
-   `model_is_approved`, `provider_is_supported` (this attestor has a backend for it), `attestor_is_listed`, `attestor_address_matches`,
+   `model_is_approved` (version ranges allowed), `provider_is_supported` (this attestor has a backend for it), `attestor_is_listed`, `attestor_address_matches`,
    `prompt_template_is_approved`, `decision_schema_is_known`, `parent_git_oid_format`, `candidate_git_oid_format`,
    `candidate_differs_from_parent`, `bundle_format_matches`, `bundle_hash_matches`
    (sha256 of the received bytes).
@@ -212,7 +230,9 @@ failure rejects, and every failure is listed in `summary`.
    (`.dosr/policy.json`, `.dosr/repo.json`), `policy_file_matches` (candidate's
    policy file hashes to the policy hash), `within_max_changed_files`,
    `within_max_patch_bytes` (same diff flags as the client's PR builder).
-4. Model: `model_output_is_valid` (raw output parses under `decision_schema`).
+4. Prompt (only if a `prompt` part was sent): `client_prompt_matches` (sha256 of the client's prompt
+   equals the prompt built from the bundle and policy). A mismatch rejects without a model call.
+5. Model: `model_output_is_valid` (raw output parses under `decision_schema`).
 
 #### 422 body
 

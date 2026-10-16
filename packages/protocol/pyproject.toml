@@ -7,10 +7,10 @@ name = "dosr-protocol"
 version = "0.1.0"
 description = "DOSR shared protocol helpers: canonical JSON, hashes, wire payloads, policy presets, PR formats"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["tomli>=2.0; python_version < '3.11'"]
 
 [tool.setuptools.packages.find]
 include = ["dosr_protocol*"]
 
 [tool.setuptools.package-data]
-dosr_protocol = ["presets/*.json"]
+dosr_protocol = ["presets/*.json", "templates/*.toml"]

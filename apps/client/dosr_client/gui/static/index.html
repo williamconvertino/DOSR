@@ -12,6 +12,7 @@
     <div class="brand"><span class="logo">◆</span> DOSR <span class="muted small">client <span id="version"></span></span></div>
     <div class="topbar-right">
       <div id="attestor-pill" class="pill pill-unknown" title="Attestor status"><span class="dot"></span><span id="attestor-text">attestor…</span></div>
+      <button id="keys-btn" class="btn btn-small btn-ghost" title="Add or replace your model provider API keys">🔑 API keys</button>
       <label class="profile-select" title="Active client profile (who is committing/submitting)">
         <span id="profile-avatar" class="avatar">?</span>
         <select id="profile"></select>
@@ -107,15 +108,21 @@
               </label>
               <label>Review model
                 <select id="model-select"></select>
+                <span id="model-custom-wrap" hidden><input id="model-custom" placeholder="Forced: or type any model, e.g. openai/gpt-4o@2024-08-06" aria-label="Custom review model"></span>
+                <span id="model-hint" class="hint"></span>
               </label>
               <div class="checks">
                 <label class="inline"><input type="checkbox" id="opt-register" checked> Register approval on chain (mock)</label>
-                <label class="inline"><input type="checkbox" id="opt-dry"> Dry run (build PR, don't send)</label>
+                <label class="inline"><input type="checkbox" id="opt-dry"> Dry run (build + validate locally, send nothing)</label>
               </div>
-              <label>Demo: send a bad request
-                <select id="bad-request"></select>
-                <span id="bad-request-hint" class="hint"></span>
-              </label>
+              <fieldset class="demo-box">
+                <legend>Attack demos</legend>
+                <label>Tamper with the request
+                  <select id="bad-request"></select>
+                  <span id="bad-request-hint" class="hint"></span>
+                </label>
+                <label class="inline" title="Skips local validation, like a modified client would. The attestor re-checks everything and rejects."><input type="checkbox" id="opt-force"> Force send — skip local validation (simulates a modified client)</label>
+              </fieldset>
               <div class="as-who muted small">Submitting as <strong id="submit-as"></strong></div>
               <button id="submit-btn" class="btn btn-primary btn-wide" type="submit">Submit to DOSR</button>
             </form>
@@ -164,9 +171,21 @@
         <label>Seed project <select id="nr-seed"></select></label>
         <label class="span2">Description <input id="nr-desc" placeholder="What is this project?"></label>
         <label>Policy preset <select id="nr-preset"></select></label>
-        <label>PR template <select id="nr-template"></select></label>
-        <label class="span2">Approved models <span class="muted small">(provider/model@version, comma-separated; blank = preset)</span>
-          <input id="nr-models" placeholder="mock/deterministic-reviewer-v1@1"></label>
+        <div class="template-field">
+          <label>PR template <select id="nr-template"></select></label>
+          <div class="template-actions">
+            <button type="button" class="btn btn-small btn-ghost" onclick="$('#nr-template').value ? openTemplateEditor({id: $('#nr-template').value}) : openTemplateEditor({id: (ui.state.presets.find((p) => p.id === $('#nr-preset').value) || {}).policy?.review.prompt_template})">View</button>
+            <button type="button" class="btn btn-small btn-ghost" onclick="openTemplateEditor()">+ New template…</button>
+          </div>
+          <span id="nr-template-hint" class="hint"></span>
+        </div>
+        <div class="span2 model-builder">
+          <span class="field-label">Approved models <span class="muted small">(the review models this repo accepts; "Custom…" lets you type any provider/model@version)</span></span>
+          <div id="mp-rows"></div>
+          <div><button type="button" class="btn btn-small btn-ghost" onclick="addModelRow()">+ Add another model</button></div>
+        </div>
+        <label class="span2">Extra context files <span class="muted small">(paths/globs added to every review prompt, comma-separated; e.g. docs/*.md, package.json)</span>
+          <input id="nr-context" placeholder="docs/*.md"></label>
         <label>Max changed files <input id="nr-max-files" type="number" min="1"></label>
         <label>Max patch bytes <input id="nr-max-bytes" type="number" min="1"></label>
       </div>
@@ -177,6 +196,47 @@
         <button type="submit" class="btn btn-primary" id="nr-submit">Create repository</button>
       </div>
     </form>
+  </div>
+
+  <!-- PR template editor -->
+  <div id="tpl-modal" class="modal modal-top" hidden>
+    <div class="modal-card modal-wide" role="dialog" aria-labelledby="tpl-title">
+      <h2 id="tpl-title">PR template</h2>
+      <p class="muted small">A PR template decides what is collected from Git, what the reviewer is told, and how the PR is laid out. It is a TOML file; a repository embeds its template in the immutable policy, so editing a file later never changes existing repositories.</p>
+      <div class="tpl-toolbar">
+        <label>Start from <select id="tpl-base"></select></label>
+        <label>New id <input id="tpl-new-id" pattern="[a-z0-9][a-z0-9._-]*" spellcheck="false"></label>
+        <button type="button" class="btn btn-small" onclick="scaffoldTemplate()">Copy into editor</button>
+      </div>
+      <p id="tpl-readonly-note" class="muted small" hidden>Read-only: built-in and in-use templates never change. Use <em>Copy into editor</em> to make your own version.</p>
+      <div class="tpl-grid">
+        <div class="tpl-pane">
+          <div class="tpl-pane-head"><strong>Template (TOML)</strong> <button type="button" class="btn btn-small" onclick="checkTemplate()">Check &amp; preview</button></div>
+          <textarea id="tpl-text" spellcheck="false" wrap="off" aria-label="Template TOML"></textarea>
+        </div>
+        <div class="tpl-pane">
+          <div class="tpl-pane-head"><strong>Preview</strong> <span class="muted small">a sample change, exactly as the reviewer reads it</span></div>
+          <div id="tpl-status" class="small"></div>
+          <pre id="tpl-preview" class="block"></pre>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeTemplateEditor()">Close</button>
+        <button type="button" class="btn btn-primary" id="tpl-save" onclick="saveTemplate()">Save template</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- API keys dialog -->
+  <div id="keys-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-labelledby="keys-title">
+      <h2 id="keys-title">API keys</h2>
+      <p class="muted small" id="keys-file"></p>
+      <div id="keys-list" class="keys-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closeModal()">Done</button>
+      </div>
+    </div>
   </div>
 
   <div id="toast" class="toast" hidden></div>

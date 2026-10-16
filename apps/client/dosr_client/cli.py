@@ -24,13 +24,32 @@ from rich.text import Text
 
 from dosr_chain import ChainError, MockChain
 from dosr_git import GitError
-from dosr_protocol.policy import PRESETS, PolicyError, build_policy, format_model, parse_model_spec
+from dosr_protocol.policy import PRESETS, PolicyError, build_policy, format_model
 from dosr_protocol.pr_format import TEMPLATES, PRFormatError
 
 from . import __version__
 from .attestor import AttestorClient, AttestorError
-from .config import ConfigError, DosrRepo, profiles_in_dir, resolve_attestor_url, resolve_profile
-from .pipeline import BAD_REQUESTS, SubmitOptions, Submission
+from .config import (
+    ConfigError,
+    DosrRepo,
+    profiles_in_dir,
+    provider_api_key,
+    provider_key_env,
+    resolve_attestor_url,
+    resolve_profile,
+)
+from .templates import (
+    TemplateError,
+    available_templates,
+    load_template_file,
+    policy_template,
+    preview,
+    resolve_template,
+    scaffold,
+    template_dirs,
+    to_toml,
+)
+from .pipeline import BAD_REQUESTS, SubmitOptions, Submission, approved_model_spec, model_choices, parse_model_choice
 from .render import OUTCOME_STYLE, ms, progress_view, result_view, short, size
 from .repo_ops import commit_all, create_repository, register_existing, repo_status
 
@@ -74,13 +93,17 @@ def cmd_init(args):
     profile, chain, _ = _ctx(args)
     path = Path(args.path).resolve()
     name = args.name or path.name
-    models = [parse_model_spec(m) for m in args.model] if args.model else None
+    models = [approved_model_spec(m) for m in args.model] if args.model else None
     attestors = None
     if args.attestor:
         attestors = []
         for spec in args.attestor:
             key_id, _, address = spec.partition("=")
             attestors.append({"key_id": key_id, "scheme": "eip712-secp256k1", "address": address})
+    template_id, template_def = None, None
+    if args.template:
+        template, template_def = resolve_template(args.template)
+        template_id = template.id
     if args.policy:
         policy = json.loads(Path(args.policy).read_text("utf-8"))
     else:
@@ -89,10 +112,12 @@ def cmd_init(args):
             repo_name=name,
             approved_models=models,
             attestors=attestors,
-            prompt_template=args.prompt_template,
+            prompt_template=template_id,
+            template=template_def,
             max_changed_files=args.max_changed_files,
             max_patch_bytes=args.max_patch_bytes,
             minimum_approvals=args.minimum_approvals,
+            context_files=args.context_file,
         )
     with console.status("Creating repository (git init, genesis commit, chain registration)…"):
         t0 = time.perf_counter()
@@ -116,8 +141,10 @@ def cmd_init(args):
                     ("Name", repo["name"]),
                     ("Repo ID", repo["repo_id"]),
                     ("Policy hash", repo["policy_hash"]),
-                    ("Policy", f"{policy['policy_id']} · template {policy['review']['prompt_template']}"),
+                    ("Policy", f"{policy['policy_id']} · template {policy['review']['prompt_template']}"
+                               + (" (custom, embedded in the policy)" if "template" in policy["review"] else "")),
                     ("Models", ", ".join(format_model(m) for m in policy["review"]["approved_models"])),
+                    ("Context files", ", ".join(policy["review"].get("context_files", [])) or "(template default)"),
                     ("Attestors", ", ".join(a["key_id"] for a in policy["attestors"])),
                     ("Limits", f"{policy['review']['max_changed_files']} files / {policy['review']['max_patch_bytes']} patch bytes"),
                     ("Genesis", created["genesis_git_oid"]),
@@ -195,8 +222,9 @@ def cmd_config(args):
         ("Policy hash (chain)", Text.assemble(onchain["policy_hash"], "  ", _ok(onchain["policy_hash"] == cfg["policy_hash"])) if onchain else Text("not registered", style="red")),
         ("Git object format", policy["git"]["object_format"]),
         ("Approved models", ", ".join(format_model(m) for m in rv["approved_models"])),
+        ("Extra context files", ", ".join(rv.get("context_files", [])) or "—"),
         ("Minimum approvals", rv["minimum_approvals"]),
-        ("PR template", f"{rv['prompt_template']} — {TEMPLATES[rv['prompt_template']].description}" if rv["prompt_template"] in TEMPLATES else rv["prompt_template"]),
+        ("PR template", _template_summary(policy)),
         ("Decision schema", rv["decision_schema"]),
         ("Limits", f"max {rv['max_changed_files']} changed files, {rv['max_patch_bytes']} patch bytes"),
         ("Attestors", "\n".join(f"{a['key_id']} {a['address']}" for a in policy["attestors"])),
@@ -231,11 +259,12 @@ def cmd_submit(args):
     repo = _repo(args)
     opts = SubmitOptions(
         message=args.message,
-        model=parse_model_spec(args.model) if args.model else None,
+        model=parse_model_choice(args.model) if args.model else None,
         register=not args.no_register,
         dry_run=args.dry_run,
         bundle_mode=args.bundle_mode,
         bad_request=args.bad_request,
+        force=args.force,
     )
     sub = Submission(repo, profile, attestor, chain, opts)
     title = f"[bold]DOSR submit[/] · {repo.name} · {profile.name} → {attestor.base_url}"
@@ -259,10 +288,13 @@ def cmd_submit(args):
     if args.json:
         print(json.dumps(snap, indent=2))
     else:
-        console.print(result_view(snap))
+        console.print(result_view(snap, full_checks=args.show_checks))
         if args.show_pr and (Path(snap["artifacts_dir"]) / "pr.md").exists():
             console.print(Markdown((Path(snap["artifacts_dir"]) / "pr.md").read_text("utf-8")))
-    return {"approved": 0, "dry-run": 0, "rejected": 2}.get(snap["outcome"], 1)
+        if args.show_prompt and (Path(snap["artifacts_dir"]) / "prompt.txt").exists():
+            console.print(Panel((Path(snap["artifacts_dir"]) / "prompt.txt").read_text("utf-8"),
+                                title="Prompt sent to the attestor", border_style="dim"))
+    return {"approved": 0, "dry-run": 0, "rejected": 2, "blocked": 3}.get(snap["outcome"], 1)
 
 
 def cmd_history(args):
@@ -292,7 +324,7 @@ def cmd_history(args):
 def _sent_recv(t: dict | None) -> str:
     if not t:
         return "—"
-    sent = sum(t.get(k) or 0 for k in ("request_bytes", "policy_bytes", "bundle_bytes"))
+    sent = sum(t.get(k) or 0 for k in ("request_bytes", "policy_bytes", "bundle_bytes", "prompt_bytes"))
     return f"{size(sent)} / {size(t.get('response_bytes'))}"
 
 
@@ -306,9 +338,11 @@ def cmd_show(args):
     if args.json:
         print(json.dumps(data, indent=2))
         return
-    console.print(result_view(data["run"]))
+    console.print(result_view(data["run"], full_checks=True))
     if args.pr and "pr_markdown" in data:
         console.print(Markdown(data["pr_markdown"]))
+    if args.prompt and "prompt" in data:
+        console.print(Panel(data["prompt"], title="Prompt sent to the attestor", border_style="dim"))
     if args.response and "response" in data:
         console.print(Syntax(json.dumps(data["response"], indent=2), "json"))
 
@@ -361,6 +395,112 @@ def cmd_profiles(args):
     console.print(t)
 
 
+def _template_summary(policy) -> str:
+    try:
+        t = policy_template(policy)
+    except Exception as e:
+        return f"{policy['review']['prompt_template']} (invalid: {e})"
+    kind = "built-in" if t.builtin else "custom, embedded in the policy"
+    return f"{t.id} ({kind}) — {t.description}\nhash {t.hash}"
+
+
+def _template_table(t) -> Table:
+    sections = " → ".join(s["type"] + (f" “{s['heading']}”" if s.get("heading") else "") for s in t.sections)
+    return _kv_table([
+        ("ID", t.id),
+        ("Kind", "built-in" if t.builtin else "custom"),
+        ("Description", t.description),
+        ("Hash", t.hash),
+        ("Diff context", f"{t.diff_context_lines} lines"),
+        ("Full changed files", "yes" if t.include_full_files else "no"),
+        ("Context files", ", ".join(t.context_globs) or "—"),
+        ("Max file bytes", f"{t.max_file_bytes:,}"),
+        ("Instructions", t.instructions),
+        ("Checklist", "\n".join(f"• {c}" for c in t.checklist) or "—"),
+        ("Layout", sections),
+    ])
+
+
+def _load_template_arg(spec: str | None, args):
+    """A template id/file, or (no spec) the current repository's template."""
+    if spec:
+        if spec in TEMPLATES:
+            return TEMPLATES[spec]
+        return resolve_template(spec)[0]
+    return policy_template(_repo(args).policy)
+
+
+def cmd_template(args):
+    if args.template_cmd == "list":
+        t = Table(box=box.SIMPLE_HEAD)
+        for col in ("ID", "Source", "Description"):
+            t.add_column(col, overflow="fold")
+        for row in available_templates():
+            if row.get("error"):
+                t.add_row(f"[red]{row['id']}[/]", row["path"], f"[red]{row['error']}[/]")
+            else:
+                t.add_row(row["id"], row["path"] or "built-in", row["description"])
+        console.print(t)
+        console.print("[dim]Searched: " + ", ".join(str(d) for d in template_dirs()) +
+                      " (set DOSR_TEMPLATES to add directories).[/]")
+    elif args.template_cmd == "show":
+        t = _load_template_arg(args.template, args)
+        if args.toml:
+            console.print(to_toml(t), markup=False, highlight=False)
+        else:
+            console.print(Panel(_template_table(t), title=f"[bold]PR template {t.id}"))
+        if args.preview:
+            console.print(Panel(Syntax(preview(t), "markdown", word_wrap=True), title="Preview on a sample change (the exact PR text the reviewer gets)"))
+    elif args.template_cmd == "new":
+        base = _load_template_arg(args.base, args) if args.base else TEMPLATES["standard-code-review-v1"]
+        out = Path(args.output or f"{args.id}.toml")
+        if out.exists() and not args.overwrite:
+            raise TemplateError(f"{out} already exists (use --overwrite)")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(scaffold(args.id, base, args.description), encoding="utf-8")
+        console.print(f"[green]✓[/] wrote [bold]{out}[/] (copied from {base.id}). Edit it, then:\n"
+                      f"  dosr template check {out} --preview\n  dosr init PATH --template {out}")
+    elif args.template_cmd == "check":
+        t = load_template_file(args.file)
+        if t.id in TEMPLATES:
+            raise TemplateError(f"id {t.id!r} is a built-in template; give your template its own id")
+        console.print(f"[green]✓[/] {args.file}: valid template [bold]{t.id}[/] (hash {t.hash})")
+        console.print(Panel(_template_table(t), title=f"[bold]PR template {t.id}"))
+        if args.preview:
+            console.print(Panel(Syntax(preview(t), "markdown", word_wrap=True), title="Preview on a sample change (the exact PR text the reviewer gets)"))
+
+
+def cmd_models(args):
+    """Common review models (OpenAI, Claude, Gemini, GLM, mock) and, inside a DOSR repo,
+    which of them its policy approves."""
+    from dosr_protocol.models import catalog_choices
+
+    policy = None
+    try:
+        policy = _repo(args).policy
+    except Exception:
+        pass
+    rows = model_choices(policy) if policy else [dict(c, approved=None, request=c["spec"]) for c in catalog_choices()]
+    if args.provider:
+        from dosr_protocol.models import canonical_provider
+        rows = [r for r in rows if r["provider"] == canonical_provider(args.provider)]
+    t = Table(box=box.SIMPLE_HEAD)
+    for col in ("Model (use with --model)", "Name", "API model id", "Key") + (("Policy",) if policy else ()):
+        t.add_column(col, overflow="fold")
+    for r in rows:
+        env = provider_key_env(r["provider"])
+        key = "[dim]none needed[/]" if not env else ("[green]✓[/] " if provider_api_key(r["provider"]) else "[red]✗[/] ") + env
+        cells = [r["request"], f"{r['provider_label']} · {r['label']}", r["api_model"], key]
+        if policy:
+            cells.append("[green]approved[/]" + (f" [dim]({r['spec']})[/]" if r.get("range") else "")
+                         if r["approved"] else "[dim]not approved[/]")
+        t.add_row(*cells)
+    console.print(t)
+    console.print("[dim]Any other provider/model@version can be typed by hand. With --model, the version may be "
+                  "omitted (openai/gpt-4o): it then comes from the policy, else the newest snapshot above. "
+                  "Aliases: claude → anthropic, google → gemini.[/]")
+
+
 def cmd_gui(args):
     from .gui.server import serve
 
@@ -374,6 +514,7 @@ def cmd_gui(args):
         attestor_url=args.attestor_url,
         chain_state=args.chain_state,
         open_browser=not args.no_browser,
+        env_file=args.env_file,
     )
 
 
@@ -396,12 +537,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--preset", choices=sorted(PRESETS), default="standard", help="policy preset")
     s.add_argument("--policy", help="use this policy JSON file verbatim instead of a preset")
     s.add_argument("--seed", help="directory of initial files to copy in")
-    s.add_argument("--model", action="append", help="approved model provider/model@version (repeatable)")
+    s.add_argument("--model", action="append",
+                   help="approved model provider/model@version, e.g. openai/gpt-4o@>=2024-08-06, "
+                        "anthropic/claude-sonnet-4-5@20250929, gemini/gemini-2.5-pro@stable; version may be a "
+                        "range like ^1.7.1; omitted = newest catalog snapshot (repeatable; see `dosr models`)")
     s.add_argument("--attestor", action="append", help="trusted attestor KEY_ID=0xADDRESS (repeatable)")
-    s.add_argument("--prompt-template", choices=sorted(TEMPLATES))
+    s.add_argument("--template", "--prompt-template", dest="template", metavar="ID|FILE",
+                   help="PR template: a built-in id (" + ", ".join(sorted(TEMPLATES)) + "), a template file "
+                        "(.toml/.json), or the id of a file in $DOSR_TEMPLATES or ~/.dosr/templates. A custom "
+                        "template is embedded in the policy (see `dosr template`)")
     s.add_argument("--max-changed-files", type=int)
     s.add_argument("--max-patch-bytes", type=int)
     s.add_argument("--minimum-approvals", type=int)
+    s.add_argument("--context-file", action="append", metavar="GLOB",
+                   help="extra file/glob every PR must include as context, e.g. 'docs/*.md' (repeatable)")
     s.add_argument("--no-register", action="store_true", help="do not register genesis on the chain")
     s.set_defaults(func=cmd_init)
 
@@ -417,16 +566,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-m", "--message", required=True)
     s.set_defaults(func=cmd_commit)
 
-    s = sub.add_parser("submit", help="commit (optional), bundle, build PR, request review, register")
+    s = sub.add_parser("submit", help="commit (optional), bundle, build PR + prompt, validate, request review, register")
     s.add_argument("-m", "--message", help="commit message for uncommitted changes")
-    s.add_argument("--model", help="review model provider/model@version (default: profile, then policy)")
-    s.add_argument("--dry-run", action="store_true", help="build everything but do not contact the attestor")
+    s.add_argument("--model", help="review model provider/model[@version], e.g. openai/gpt-4o, claude/claude-sonnet-4-5 "
+                                   "(see `dosr models`; default: profile, then policy)")
+    s.add_argument("--dry-run", action="store_true", help="build and validate locally, but send nothing")
+    s.add_argument("--force", action="store_true",
+                   help="send even if local validation fails (simulates a modified client; the attestor rejects)")
     s.add_argument("--no-register", action="store_true", help="do not submit an approval to the chain")
     s.add_argument("--bundle-mode", choices=["full", "thin"])
     s.add_argument("--bad-request", choices=sorted(BAD_REQUESTS), metavar="MODE",
                    help="DEMO: send a deliberately bad request so the attestor rejects it. MODE is one of: "
                         + "; ".join(f"{k} ({v})" for k, v in BAD_REQUESTS.items()))
     s.add_argument("--show-pr", action="store_true", help="print the generated PR afterwards")
+    s.add_argument("--show-prompt", action="store_true", help="print the exact prompt sent to the attestor")
+    s.add_argument("--show-checks", action="store_true", help="list every client/attestor check, not just failures")
     s.add_argument("--json", action="store_true", help="print the final result as JSON only")
     s.set_defaults(func=cmd_submit)
 
@@ -438,12 +592,35 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("request_id", nargs="?")
     s.add_argument("--pr", action="store_true", help="print the PR document")
     s.add_argument("--response", action="store_true", help="print the attestor response JSON")
+    s.add_argument("--prompt", action="store_true", help="print the prompt sent to the attestor")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_show)
 
     sub.add_parser("server", help="check attestor health and keys").set_defaults(func=cmd_server)
     sub.add_parser("register", help="register an existing repo's genesis on the chain").set_defaults(func=cmd_register)
     sub.add_parser("chain", help="show the mock chain state").set_defaults(func=cmd_chain)
+
+    s = sub.add_parser("template", help="PR templates: list, show, create, check")
+    tsub = s.add_subparsers(dest="template_cmd", required=True, metavar="ACTION")
+    t = tsub.add_parser("list", help="built-in templates and template files found in the search directories")
+    t = tsub.add_parser("show", help="show a template (default: the current repository's)")
+    t.add_argument("template", nargs="?", metavar="ID|FILE")
+    t.add_argument("--toml", action="store_true", help="print it as a TOML template file")
+    t.add_argument("--preview", action="store_true", help="render it on a sample change")
+    t = tsub.add_parser("new", help="write a new template file to edit, copied from an existing one")
+    t.add_argument("id", help="new template id, e.g. team-review-v1")
+    t.add_argument("--from", dest="base", metavar="ID|FILE", help="template to copy (default: standard-code-review-v1)")
+    t.add_argument("--description")
+    t.add_argument("-o", "--output", help="output file (default: ID.toml)")
+    t.add_argument("--overwrite", action="store_true")
+    t = tsub.add_parser("check", help="validate a template file (and preview it)")
+    t.add_argument("file")
+    t.add_argument("--preview", action="store_true", help="render it on a sample change")
+    s.set_defaults(func=cmd_template)
+
+    s = sub.add_parser("models", help="list common review models (OpenAI, Claude, Gemini, ...) and policy approval")
+    s.add_argument("--provider", help="only this provider (openai, anthropic/claude, gemini/google, zhipu, mock)")
+    s.set_defaults(func=cmd_models)
 
     s = sub.add_parser("profiles", help="list client profiles in a directory")
     s.add_argument("--dir", default="demo/clients")
@@ -455,6 +632,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--workspace", default=".", help="directory containing DOSR repositories")
     s.add_argument("--seeds", help="directory of seed projects offered when creating repos")
     s.add_argument("--profiles", help="directory of client profiles to switch between")
+    s.add_argument("--env-file", help="save API keys entered in the GUI to this .env file (default: this session only)")
     s.add_argument("--no-browser", action="store_true")
     s.set_defaults(func=cmd_gui)
     return p
@@ -469,7 +647,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args) or 0
-    except (ConfigError, PolicyError, PRFormatError, ChainError, AttestorError, GitError, FileNotFoundError) as e:
+    except (ConfigError, PolicyError, PRFormatError, TemplateError, ChainError, AttestorError, GitError,
+            FileNotFoundError) as e:
         err.print(f"[bold red]error:[/] {e}")
         return 1
     except KeyboardInterrupt:
