@@ -37,10 +37,13 @@ Run from `experiments/` (`PY` = the venv's Python):
 PY -m dosr_eval list                                   # cases and their labels
 PY -m dosr_eval prompt demo-calc-evaluate-injection    # exact prompt sent to the model
 PY -m dosr_eval run --dry-run \
-   --template security-sensitive-review-v2 --template exp-example-evidence-v0 \
-   --model zhipu/glm-4.6@api-v4 --reps 3                # call count + token estimate, no calls
-PY -m dosr_eval run --model zhipu/glm-4.6@api-v4 --reps 3 --pricing pricing.json --label pilot
+   --template security-sensitive-review-v2 --template exp-quality-bar-v0 \
+   --model zhipu/glm-4.6@api-v4 --reps 3                # calls, tokens, worst-case cost; no calls made
+PY -m dosr_eval run --template security-sensitive-review-v2 --template exp-quality-bar-v0 \
+   --model zhipu/glm-4.6@api-v4 --reps 3 --budget 0.50 --label pilot
 PY -m dosr_eval report results/<run>.jsonl             # re-score a finished run
+PY -m dosr_eval figures results/<run>.jsonl            # paper tables + charts -> reports/figures/<run>/
+PY -m dosr_eval spend --since 2026-10-20               # API spend across all runs
 ```
 
 Defaults: template `security-sensitive-review-v2`, model `mock/deterministic-reviewer-v1@1`
@@ -49,6 +52,35 @@ Defaults: template `security-sensitive-review-v2`, model `mock/deterministic-rev
 Each run writes `results/<run_id>.jsonl` (one row per model call) and
 `results/<run_id>.meta.json` (cases, templates, models, reps, DOSR commit). `results/` is
 git-ignored; commit a report you want to keep under `reports/`.
+
+## Spend
+
+Copy `pricing.example.json` to `pricing.json` (git-ignored; used by default). It has
+Z.ai's list price for GLM-4.6; the attestor calls bigmodel.cn, which bills in CNY, so
+check your account's billing page.
+
+- `run --dry-run` prints a worst-case cost: the prompt estimate ×1.5 plus a full
+  1024-token answer (the attestor's `max_tokens`) for every call.
+- `run --budget X` stops before a call whose worst case would take total spend past X.
+  The prompt side is an estimate, so treat the cap as close, not exact.
+- `spend` totals tokens and cost per run and model from `results/*.jsonl`, pricing any
+  row recorded without a price.
+
+## Paper figures
+
+`figures RESULTS.jsonl [...]` writes, per run:
+
+| File | Content |
+|---|---|
+| `matrix.tex` / `.md` | accept and reject rate per template × cell (PR quality high/low × code good/bad); the required outcome in bold |
+| `rates.tex` / `.md` | accuracy, false reject, miss, parse fail, flip per template |
+| `cost.tex` / `.md` | tokens, cost and latency per review |
+| `accept_by_cell.pdf` / `.png` | accept rate per cell, one bar per template |
+| `rates.pdf` / `.png` | false reject, miss, parse fail per template |
+
+Every rate carries a 95% Wilson interval, because pilot samples are small. Runs made
+only with the mock reviewer are labeled "placeholder data" in every caption.
+The LaTeX tables need `\usepackage{booktabs,multirow}`.
 
 ## Metrics
 
@@ -75,6 +107,8 @@ One directory per case under `cases/`, with a `case.json`:
   "category": "benign | bug | vuln | injection | deceptive",
   "expected": "approve | reject",
   "repo_name": "cJSON",
+  "quality": "high | low   (optional: description, tests, clarity)",
+  "code": "good | bad      (optional: correct and safe, or not)",
   "message": "optional commit message (title = first line); overrides the real one",
   "target_issue": "what a correct rejection should name (never shown to the model)",
   "source": {"dataset": "SEVRA", "ref": "..."},
@@ -92,14 +126,23 @@ One directory per case under `cases/`, with a `case.json`:
 
 Commits use a fixed identity and date, so a case always produces the same prompt.
 
+`quality` + `code` place a case in the evaluation matrix. Policy: only a high-quality
+PR with good code is accepted, so the loader rejects a case whose `expected` disagrees.
+Build matrix cells as **pairs**: the same code with a good and a poor presentation
+(`message`, and `delete` to drop tests), so a verdict change can only come from
+presentation (see `demo-calc-add-power` / `demo-calc-add-power-low-quality`).
+
 ## Templates
 
-Any template in `dosr_protocol.pr_format.TEMPLATES`, or an experimental one as
-`templates/<id>.json` (same fields as `PRTemplate`). Experimental templates let us
-compare prompt variants without touching the protocol; a winner is added to
-`pr_format.py` under a new id in its own PR (policies pin template ids, so existing
-templates never change). `exp-example-evidence-v0` shows the shape: each issue must
-cite file, evidence, and reason, within the existing `dosr-review-decision-v1` schema.
+Any built-in template (`dosr_protocol/templates/*.toml`), or an experimental one as
+`templates/<id>.toml` in the same format (`dosr template new` makes a starting copy).
+A winner can be embedded in a repository policy as `review.template` unchanged, or
+added as a built-in under a new id (policies pin ids, so templates never change).
+
+| Experimental template | Tests |
+|---|---|
+| `exp-evidence-v0` | each issue must cite `path:line - code - reason` (Jakub's template B) |
+| `exp-quality-bar-v0` | security-v2 plus a quality bar: clear message, tests for new behavior |
 
 ## Known limits
 

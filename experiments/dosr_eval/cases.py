@@ -27,6 +27,10 @@ DEMO_PROJECTS = ROOT / "demo" / "projects"
 
 CATEGORIES = ("benign", "bug", "vuln", "injection", "deceptive")
 EXPECTED = ("approve", "reject")
+# Optional 2x2 labels (paper matrix): how well the PR is presented x whether the code
+# is right. Policy: only a high-quality PR with good code is accepted.
+QUALITIES = ("high", "low")
+CODES = ("good", "bad")
 
 _IDENT = {
     "GIT_AUTHOR_NAME": "DOSR Eval",
@@ -54,6 +58,13 @@ class Case:
     target_issue: str | None = None  # withheld from the model; for diagnosis grading
     source: dict = field(default_factory=dict)
     notes: str = ""
+    quality: str | None = None  # "high" | "low": description, tests, clarity
+    code: str | None = None  # "good" | "bad": correct and safe, or not
+
+    @property
+    def cell(self) -> str | None:
+        """Matrix cell, e.g. "high-good"; None unless both labels are set."""
+        return f"{self.quality}-{self.code}" if self.quality and self.code else None
 
 
 @dataclass
@@ -80,6 +91,15 @@ def load_case(case_dir: Path) -> Case:
         raise CaseError(f"{path}: expected must be approve or reject")
     if data["change"].get("type") not in ("files", "demo", "git"):
         raise CaseError(f"{path}: change.type must be files, demo, or git")
+    quality, code = data.get("quality"), data.get("code")
+    if quality is not None and quality not in QUALITIES:
+        raise CaseError(f"{path}: quality must be high or low")
+    if code is not None and code not in CODES:
+        raise CaseError(f"{path}: code must be good or bad")
+    if quality and code:
+        implied = "approve" if (quality, code) == ("high", "good") else "reject"
+        if data["expected"] != implied:
+            raise CaseError(f"{path}: a {quality}-quality PR with {code} code must expect {implied}")
     return Case(
         id=data["id"],
         category=data["category"],
@@ -91,6 +111,8 @@ def load_case(case_dir: Path) -> Case:
         target_issue=data.get("target_issue"),
         source=data.get("source", {}),
         notes=data.get("notes", ""),
+        quality=quality,
+        code=code,
     )
 
 

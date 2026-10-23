@@ -19,6 +19,7 @@ from dosr_protocol.decision import DECISION_V1, DecisionError, parse_decision
 from .cases import Case, materialize
 from .prompts import ReviewInput, build_review_input, load_template
 from .reviewers import Backend, ModelSpec, api_key_env, attestor_reviewers
+from .spend import cost_of, price_of, worst_case_call
 
 EXPERIMENTS = Path(__file__).resolve().parents[1]
 
@@ -35,6 +36,7 @@ class RunConfig:
     label: str = ""
     pricing: dict = field(default_factory=dict)
     providers_file: Path | None = None
+    budget: float | None = None  # stop before spending more than this (pricing currency)
 
 
 def load_pricing(path: Path | None) -> dict:
@@ -44,13 +46,17 @@ def load_pricing(path: Path | None) -> dict:
     return json.loads(Path(path).read_text("utf-8"))
 
 
-def cost_of(usage: dict | None, price: dict | None) -> float | None:
-    if not usage or not price:
-        return None
-    pin, pout = price.get("input_per_mtok"), price.get("output_per_mtok")
-    if pin is None or pout is None:
-        return None
-    return (usage.get("prompt_tokens", 0) * pin + usage.get("completion_tokens", 0) * pout) / 1_000_000
+def estimate_cost(cfg: RunConfig, inputs: dict) -> float | None:
+    """Worst-case cost of the whole run; None if a paid model has no price."""
+    total = 0.0
+    for spec in cfg.models:
+        if spec.provider == "mock":
+            continue
+        price = price_of(cfg.pricing, str(spec))
+        if price is None:
+            return None
+        total += sum(worst_case_call(ri.metrics["total"]["est_tokens"], price) for ri in inputs.values()) * cfg.reps
+    return total
 
 
 def _git_head() -> str | None:
@@ -96,6 +102,8 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         if b.needs_key and not b.key:
             raise SystemExit(f"{name} needs an API key: set {api_key_env(b.spec.provider)} "
                              f"(environment or the repo's .env)")
+        if cfg.budget is not None and b.needs_key and price_of(cfg.pricing, name) is None:
+            raise SystemExit(f"--budget needs a price for {name} in the pricing file")
 
     started = datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ") + (f"-{cfg.label}" if cfg.label else "")
@@ -110,22 +118,37 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         "models": [str(s) for s in cfg.models],
         "reps": cfg.reps,
         "decision_schema": DECISION_V1,
+        "budget": cfg.budget,
     }
     (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     total = len(cfg.cases) * len(cfg.templates) * len(backends) * cfg.reps
-    done = 0
+    done, spent = 0, 0.0
+
+    def stop(reason: str) -> Path:
+        meta.update(stopped=reason, calls_made=done, spent=round(spent, 6))
+        (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        log(f"stopped: {reason}")
+        return rows_path
+
     with rows_path.open("w", encoding="utf-8") as f:
         for case in cfg.cases:
             for tid in cfg.templates:
                 ri = inputs[(case.id, tid)]
                 for name, backend in backends.items():
+                    price = price_of(cfg.pricing, name)
                     for rep in range(cfg.reps):
+                        if cfg.budget is not None and price is not None:
+                            next_max = worst_case_call(ri.metrics["total"]["est_tokens"], price)
+                            if spent + next_max > cfg.budget:
+                                return stop(f"budget {cfg.budget} reached ({spent:.4f} spent, next call "
+                                            f"could cost up to {next_max:.4f})")
                         result = review_once(backend, ri.prompt)
                         row = {
                             "run_id": run_id,
                             "case": case.id,
                             "category": case.category,
+                            "cell": case.cell,
                             "expected": case.expected,
                             "template": tid,
                             "model": name,
@@ -135,8 +158,9 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
                             "prompt_est_tokens": ri.metrics["total"]["est_tokens"],
                             "limit_problems": ri.limit_problems,
                             **result,
-                            "cost": cost_of(result.get("usage"), cfg.pricing.get(name)),
+                            "cost": cost_of(result.get("usage"), price),
                         }
+                        spent += row["cost"] or 0.0
                         f.write(json.dumps(row, ensure_ascii=False) + "\n")
                         f.flush()
                         done += 1
@@ -144,5 +168,7 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
                             "parse-fail" if result.get("parse_error") else
                             ("approve" if result["approved"] else "reject"))
                         log(f"[{done}/{total}] {case.id} · {tid} · {name} · rep {rep}: {verdict} "
-                            f"(expected {case.expected})")
+                            f"(expected {case.expected})" + (f" · spent {spent:.4f}" if price else ""))
+    meta.update(calls_made=done, spent=round(spent, 6))
+    (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return rows_path
