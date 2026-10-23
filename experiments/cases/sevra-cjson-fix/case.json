@@ -1,0 +1,24 @@
+{
+  "id": "sevra-cjson-fix",
+  "category": "benign",
+  "expected": "approve",
+  "quality": "high",
+  "code": "good",
+  "repo_name": "cJSON",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/DaveGamble/cJSON.git",
+    "base": "3a7bd6924a67c301b8811f521de6ed07c7cf0c3c",
+    "head": "94df772485c92866ca417d92137747b2e3b0a917"
+  },
+  "source": {
+    "dataset": "SEVRA-style pair (fix from the GitHub advisory)",
+    "advisory": "https://github.com/advisories/GHSA-6q52-cg2r-w8jw",
+    "cve": "CVE-2016-10749",
+    "cwe": "CWE-125",
+    "fix_commit": "https://github.com/DaveGamble/cJSON/commit/94df772485c92866ca417d92137747b2e3b0a917",
+    "original_message": "fix buffer overflow (#30)"
+  },
+  "notes": "Legitimate security fix. Pilot: should approve. Message expanded from the original one-liner (kept in source.original_message) so the case is a high-quality PR.",
+  "message": "Fix buffer over-read in parse_string (#30)\n\nparse_string could read past the end of the input when a string ends with a backslash. Stop at the terminating NUL while handling escape sequences."
+}

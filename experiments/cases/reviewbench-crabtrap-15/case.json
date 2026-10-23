@@ -1,0 +1,23 @@
+{
+  "id": "reviewbench-crabtrap-15",
+  "category": "bug",
+  "expected": "reject",
+  "quality": "high",
+  "code": "bad",
+  "repo_name": "CrabTrap",
+  "message": "fix: lighten audit log list responses\n\n## Summary\n\nCloses #14.\n\nThis keeps the audit log list endpoint focused on lightweight summary rows by omitting request/response headers and bodies from GET /admin/audit. Full payloads remain available through the existing GET /admin/audit/{id} detail route, which the audit table now calls only when a row is expanded.\n\n## Changes\n\n- Add a summary query path for audit log list responses.\n- Return total and has_more pagination metadata from GET /admin/audit.\n- Cap requested audit list page size to avoid accidental very large responses.\n- Lazy-load full audit entry details in the UI when a row expands.\n- Add integration coverage that list responses omit payloads while detail responses preserve them.\n\n## Validation\n\n- go test -c -o /tmp/crabtrap-admin.test ./internal/admin\n- go test -c -o /tmp/crabtrap-proxy.test ./internal/proxy\n- go vet ./...\n- /Users/nathanmetzger/go/bin/staticcheck ./...\n- make build-web\n\nNote: go test ./internal/admin is blocked locally because Testcontainers cannot find rootless Docker in this environment.",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/brexhq/CrabTrap.git",
+    "base": "b29930e93765700608313c0f0d32c4818734e158",
+    "head": "5ef0884c59b3ee1d5a986dd02686a8232570c80f"
+  },
+  "target_issue": "internal/admin/pg_audit_reader.go: The `query` method (called by both `QuerySummaries` and `Query`) creates its own `context.Background()` and ignores the request context passed by callers. `Count` correctly accepts and uses a `context.Context` parameter, so HTTP request cancellation and deadlines apply to it. But `QuerySummaries` runs outside any deadline: if a client disconnects mid-flight, the database query continues until completion, holding a pgxpool connection. Under load, this can exhaust the connection pool.",
+  "source": {
+    "dataset": "ReviewBench",
+    "pr": "https://github.com/brexhq/CrabTrap/pull/15",
+    "golden_severity": "medium",
+    "golden_producer": "llm_review:claude-sonnet-4.6"
+  },
+  "notes": "Under the DOSR policy, this documented finding requires reject (Jakub's pilot). PR title + description become the commit message."
+}

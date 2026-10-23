@@ -1,0 +1,23 @@
+{
+  "id": "reviewbench-gh-copilot-review-9",
+  "category": "bug",
+  "expected": "reject",
+  "quality": "high",
+  "code": "bad",
+  "repo_name": "gh-copilot-review",
+  "message": "feat: skip Copilot review request when existing review is newer than last commit\n\n## Summary\n\n- Add `CheckCopilotReviewStatus()` method that fetches the PR head SHA and reviews in a single pass, determining both pending and fresh status\n- Fresh check compares each Copilot review's `commit_id` against the current PR head SHA to determine if the review covers the latest code\n- If Copilot's review matches the current head commit, skip requesting a new review and print \"already up to date\" message\n- Consolidates the previous `HasCopilotPendingReview()` and fresh check into one API call to reduce rate limit usage\n- Uses `gh api --paginate --jq '.[]'` with `json.Decoder` for correct pagination handling\n\n## Test plan\n\n- [ ] Run against a PR where Copilot has already reviewed the current head commit -> should skip with \"already up to date\" message\n- [ ] Run against a PR with new commits after Copilot's last review -> should request a new review as usual\n- [ ] Run against a PR with no Copilot reviews -> should request a new review as usual",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/k1LoW/gh-copilot-review.git",
+    "base": "5f3765a9ef25d9c5a57699418bed105d9ac54691",
+    "head": "f98281938e63acd1d2df9b89d6af98dcf58c9fa8"
+  },
+  "target_issue": "cmd/root.go: This freshness check runs after `MinimizeCopilotComments`, which minimizes every unminimized Copilot review. In the up-to-date case this means the current/fresh Copilot review is hidden as `OUTDATED` and then no replacement review is requested. The fresh check needs to happen before minimizing, or minimization needs to exclude the review for the current head.",
+  "source": {
+    "dataset": "ReviewBench",
+    "pr": "https://github.com/k1LoW/gh-copilot-review/pull/9",
+    "golden_severity": "high",
+    "golden_producer": "ccr:gpt-5.5[ReasoningEffort=medium]"
+  },
+  "notes": "Under the DOSR policy, this documented finding requires reject (Jakub's pilot). PR title + description become the commit message."
+}
