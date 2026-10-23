@@ -1,7 +1,6 @@
 {
   "name": "Carol",
   "email": "carol@dosr.demo",
-  "description": "Honest contributor who pins the approved mock model explicitly",
-  "review_model": { "provider": "mock", "model": "deterministic-reviewer-v1", "version": "1" },
+  "description": "Honest contributor; picks model versions explicitly (e.g. a newer release inside the policy's range)",
   "color": "#ae3ec9"
 }

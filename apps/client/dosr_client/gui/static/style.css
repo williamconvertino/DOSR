@@ -272,3 +272,66 @@ ul.issues li + li {
 .commit-bar input {
   flex: 1;
 }
+
+/* --- local validation / attestation (blocked outcome, checks table, attack demos) --- */
+.outcome-blocked { background: var(--warn); color: #fff; }
+.progress-bar.done-blocked { background: var(--warn); }
+.decision.blocked { background: var(--warn-bg); border-color: var(--warn); }
+.decision.blocked h2 { color: var(--warn); }
+.result-cards .card.wide { grid-column: 1 / -1; }
+.ok-text { color: var(--ok); font-weight: 600; }
+.bad-text { color: var(--bad); font-weight: 600; }
+table.checks-table td.c, table.checks-table th.c { text-align: center; width: 64px; }
+table.checks-table tr.failed td { background: var(--bad-bg); }
+table.checks-table tr.failed td:last-child { color: var(--bad); }
+table.checks-table td:last-child { word-break: break-word; }
+.subtabs { flex-wrap: wrap; }
+.subtabs .btn.active { border-color: var(--accent); color: var(--accent); }
+.artifact-view { max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+#model-custom { margin-top: 6px; width: 100%; box-sizing: border-box; }
+#model-hint { color: var(--muted); }
+.demo-box { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 4px 0 8px; min-width: 0; }
+.demo-box legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+
+/* New-repo model rows */
+.model-builder { display: flex; flex-direction: column; gap: 8px; }
+.model-builder .field-label { font-size: 13px; font-weight: 500; }
+#mp-rows { display: flex; flex-direction: column; gap: 6px; }
+.model-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.model-row select { flex: 1 1 130px; min-width: 0; width: auto; }
+.model-row .mp-custom { flex: 3 1 260px; min-width: 0; width: auto; }
+.model-row label.inline { flex-direction: row; white-space: nowrap; margin-bottom: 0 !important; }
+.model-row label.inline.disabled { opacity: .45; }
+.model-row .mp-remove { padding: 4px 8px; }
+
+/* Submit: models without an API key */
+#model-select option.no-key, #model-select.no-key { color: var(--muted); }
+#model-select option:not(.no-key) { color: var(--text); }
+#model-custom-wrap input { margin-top: 6px; width: 100%; box-sizing: border-box; }
+
+/* API keys dialog */
+.keys-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.key-row { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.key-name { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; justify-content: space-between; }
+.key-mask { letter-spacing: 1px; }
+.key-edit { display: flex; gap: 6px; flex-wrap: wrap; }
+.key-edit .key-input { flex: 1 1 200px; min-width: 0; }
+.model-row [hidden], .key-row [hidden] { display: none !important; }
+
+/* PR templates */
+.template-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.template-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.modal-top { z-index: 30; }
+.modal-card.modal-wide { width: min(1180px, 100%); }
+.tpl-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 12px 0 6px; }
+.tpl-toolbar label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
+.tpl-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 8px; }
+.tpl-pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tpl-pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+#tpl-text { width: 100%; box-sizing: border-box; height: 52vh; white-space: pre; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; tab-size: 4; }
+#tpl-preview { height: 52vh; max-height: none; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+@media (max-width: 760px) {
+  .tpl-grid { grid-template-columns: 1fr; }
+  #tpl-text, #tpl-preview { height: 40vh; }
+}
+#nr-template-hint { color: var(--muted); }

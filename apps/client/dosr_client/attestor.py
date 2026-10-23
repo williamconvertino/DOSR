@@ -34,6 +34,8 @@ def _format_detail(status: int, detail) -> str:
     """Human-readable version of the attestor's 400/422 bodies."""
     if isinstance(detail, str):
         return detail
+    if isinstance(detail, dict) and detail.get("code") == "missing_prerequisites":
+        return f"{detail.get('message')} (retry with --bundle-mode full)"
     if isinstance(detail, dict) and "errors" in detail:
         errs = "; ".join(
             f"{'.'.join(str(x) for x in e.get('loc', []))}: {e.get('msg')}" for e in detail["errors"][:5]
@@ -92,14 +94,18 @@ class AttestorClient:
         bundle_bytes: bytes,
         on_uploaded: Callable[[], None] | None = None,
         provider_key: str | None = None,
+        prompt_bytes: bytes | None = None,
     ) -> ReviewCall:
-        boundary, chunks = _multipart(
-            [
-                ("request", "request.json", "application/json", request_bytes),
-                ("policy", "policy.json", "application/json", policy_bytes),
-                ("bundle", "change.bundle", "application/octet-stream", bundle_bytes),
-            ]
-        )
+        """`prompt_bytes`: the review prompt we built. The attestor never forwards it to the
+        model; it rejects the request if it differs from the prompt it derives itself."""
+        parts = [
+            ("request", "request.json", "application/json", request_bytes),
+            ("policy", "policy.json", "application/json", policy_bytes),
+            ("bundle", "change.bundle", "application/octet-stream", bundle_bytes),
+        ]
+        if prompt_bytes is not None:
+            parts.append(("prompt", "prompt.txt", "text/plain; charset=utf-8", prompt_bytes))
+        boundary, chunks = _multipart(parts)
         total = sum(len(c) for c in chunks)
         marks = {"start": time.perf_counter(), "uploaded": None}
 

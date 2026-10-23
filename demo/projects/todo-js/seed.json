@@ -1,6 +1,6 @@
 {
   "name": "todo-js",
-  "description": "Minimal JavaScript todo-list module. Standard policy, two-commit PR demo.",
+  "description": "Minimal JavaScript todo-list module. Mock reviewer with a minimum version (mock/deterministic-reviewer@^1.2.0); custom PR template team-review-v1 (demo/templates); docs/STYLE.md and package.json are required context.",
   "language": "javascript",
   "preset": "standard",
   "demo_changes": [
@@ -9,5 +9,15 @@
       "message": "Support completing todos and listing open items",
       "expect": "approved"
     }
-  ]
+  ],
+  "policy_overrides": {
+    "approved_models": [
+      "mock/deterministic-reviewer@^1.2.0"
+    ],
+    "context_files": [
+      "docs/*.md",
+      "package.json"
+    ],
+    "template": "team-review-v1"
+  }
 }

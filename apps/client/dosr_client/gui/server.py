@@ -23,8 +23,10 @@ from pydantic import BaseModel
 
 from dosr_chain import ChainError, MockChain
 from dosr_git import GitError
-from dosr_protocol.policy import PRESETS, build_policy, format_model, load_preset, parse_model_spec
+from dosr_protocol.models import CATALOG, catalog_choices
+from dosr_protocol.policy import PRESETS, build_policy, format_model, load_preset
 from dosr_protocol.pr_format import TEMPLATES
+from dosr_protocol.templates import TemplateError, to_toml
 
 from .. import __version__
 from ..attestor import AttestorClient, AttestorError
@@ -34,18 +36,45 @@ from ..config import (
     DosrRepo,
     load_profile,
     profiles_in_dir,
+    provider_api_key,
+    provider_key_env,
     resolve_attestor_url,
     resolve_profile,
 )
-from ..pipeline import BAD_REQUESTS, STEPS, SubmitOptions, Submission
+from ..pipeline import (
+    BAD_REQUESTS,
+    STEPS,
+    SubmitOptions,
+    Submission,
+    approved_model_spec,
+    model_choices,
+    parse_model_choice,
+)
+from ..keys import KeyStore, KeyStoreError
+from ..templates import (
+    available_templates,
+    check_text,
+    policy_template,
+    preview,
+    resolve_template,
+    scaffold,
+    template_dirs,
+)
 from ..repo_ops import commit_all, create_repository, register_existing, repo_status
 
 STATIC = Path(__file__).parent / "static"
+
+
+def _provider_keys(providers) -> dict:
+    """provider -> {env, set} for providers that need the contributor's API key."""
+    return {p: {"env": provider_key_env(p), "set": bool(provider_api_key(p))}
+            for p in sorted(providers) if provider_key_env(p)}
 MAX_EDIT_BYTES = 512 * 1024
 
 
 class GuiState:
-    def __init__(self, workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state):
+    def __init__(self, workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file=None):
+        self.keys = KeyStore(env_file)
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.seeds_dir = Path(seeds_dir).resolve() if seeds_dir else None
@@ -89,7 +118,8 @@ class GuiState:
             if not meta_file.exists():
                 continue
             meta = json.loads(meta_file.read_text("utf-8"))
-            out.append({"id": d.name, **{k: meta.get(k) for k in ("name", "description", "preset", "language")}})
+            out.append({"id": d.name, **{k: meta.get(k) for k in ("name", "description", "preset", "language")},
+                        "policy_overrides": meta.get("policy_overrides", {})})
         return out
 
 
@@ -106,6 +136,15 @@ def _safe_path(repo: DosrRepo, rel: str) -> Path:
 # ---------------------------------------------------------------- request bodies
 
 
+class TemplateTextBody(BaseModel):
+    text: str
+    overwrite: bool = False
+
+
+class KeyBody(BaseModel):
+    key: str
+
+
 class ProfileBody(BaseModel):
     id: str
 
@@ -120,6 +159,7 @@ class CreateRepoBody(BaseModel):
     max_changed_files: int | None = None
     max_patch_bytes: int | None = None
     minimum_approvals: int | None = None
+    context_files: list[str] | None = None
 
 
 class FileBody(BaseModel):
@@ -137,6 +177,7 @@ class SubmitBody(BaseModel):
     register_on_chain: bool = True
     dry_run: bool = False
     bad_request: str | None = None
+    force: bool = False
 
 
 # ---------------------------------------------------------------- app
@@ -181,10 +222,104 @@ def create_app(state: GuiState) -> FastAPI:
             "repos": repos,
             "seeds": state.seeds(),
             "presets": [{"id": k, "description": v, "policy": load_preset(k)} for k, v in PRESETS.items()],
-            "templates": [{"id": t.id, "description": t.description} for t in TEMPLATES.values()],
+            "templates": available_templates(),
+            "templates_dir": str(template_dirs()[0]),
             "steps": [{"id": i, "label": label} for i, label in STEPS],
             "bad_requests": [{"id": k, "description": v} for k, v in BAD_REQUESTS.items()],
+            "model_catalog": {
+                "providers": [{"id": k, "label": v["label"]} for k, v in CATALOG.items()],
+                "models": catalog_choices(),
+                "keys": _provider_keys(CATALOG),
+            },
         }
+
+    # ---- PR templates (files: dosr_protocol/templates.py)
+
+    def _template_view(t, text=None, path=None):
+        return {"id": t.id, "description": t.description, "builtin": t.builtin, "hash": t.hash, "path": path,
+                "toml": text if text is not None else to_toml(t), "preview": preview(t),
+                "sections": [s["type"] for s in t.sections]}
+
+    @app.get("/api/templates")
+    def list_templates():
+        return {"templates": available_templates(), "dir": str(template_dirs()[0])}
+
+    @app.get("/api/templates/{template_id}")
+    def get_template_file(template_id: str):
+        if template_id in TEMPLATES:
+            return _template_view(TEMPLATES[template_id])
+        try:
+            t, _ = resolve_template(template_id)
+        except TemplateError as e:
+            raise HTTPException(404, str(e))
+        path = next((r["path"] for r in available_templates() if r["id"] == t.id), None)
+        text = Path(path).read_text("utf-8") if path else None
+        return _template_view(t, text, path)
+
+    @app.get("/api/template-scaffold")
+    def template_scaffold(id: str, base: str = "standard-code-review-v1"):
+        try:
+            base_t = TEMPLATES[base] if base in TEMPLATES else resolve_template(base)[0]
+            return {"toml": scaffold(id, base_t)}
+        except TemplateError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/templates/check")
+    def check_template(body: TemplateTextBody):
+        try:
+            t = check_text(body.text)
+            if t.id in TEMPLATES:
+                raise TemplateError(f"id {t.id!r} is a built-in template; give your template its own id")
+        except TemplateError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, **_template_view(t, body.text)}
+
+    @app.post("/api/templates")
+    def save_template(body: TemplateTextBody):
+        try:
+            t = check_text(body.text)
+            if t.id in TEMPLATES:
+                raise TemplateError(f"id {t.id!r} is a built-in template; give your template its own id")
+        except TemplateError as e:
+            raise HTTPException(400, str(e))
+        directory = template_dirs()[0]
+        path = directory / f"{t.id}.toml"  # the id is [a-z0-9._-], so this stays in `directory`
+        if path.exists() and path.read_text("utf-8") != body.text and not body.overwrite:
+            raise HTTPException(409, f"{path.name} already exists; save with overwrite to replace it "
+                                     "(repositories that already use it keep their embedded copy)")
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text(body.text, encoding="utf-8")
+        return {"saved": str(path), **_template_view(t, body.text, str(path))}
+
+    @app.get("/api/repos/{name}/template")
+    def repo_template(name: str):
+        repo = state.repo(name)
+        try:
+            t = policy_template(repo.policy)
+        except Exception as e:
+            raise HTTPException(400, str(e))
+        return _template_view(t)
+
+    # ---- contributor API keys (never returned in full)
+
+    @app.get("/api/keys")
+    def get_keys():
+        return {"keys": state.keys.status(),
+                "env_file": str(state.keys.env_file) if state.keys.env_file else None}
+
+    @app.put("/api/keys/{provider}")
+    def put_key(provider: str, body: KeyBody):
+        try:
+            return state.keys.set(provider, body.key)
+        except KeyStoreError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/api/keys/{provider}")
+    def delete_key(provider: str):
+        try:
+            return state.keys.remove(provider)
+        except KeyStoreError as e:
+            raise HTTPException(400, str(e))
 
     @app.post("/api/profile")
     def set_profile(body: ProfileBody):
@@ -221,14 +356,23 @@ def create_app(state: GuiState) -> FastAPI:
             if not seed:
                 raise HTTPException(404, f"unknown seed {body.seed}")
             seed_dir = state.seeds_dir / body.seed / "files"
+        template_id, template_def = None, None
+        if body.prompt_template:
+            try:
+                t, template_def = resolve_template(body.prompt_template)
+            except TemplateError as e:
+                raise HTTPException(400, str(e))
+            template_id = t.id
         policy = build_policy(
             body.preset,
             repo_name=name,
-            approved_models=[parse_model_spec(m) for m in body.approved_models] if body.approved_models else None,
-            prompt_template=body.prompt_template or None,
+            approved_models=[approved_model_spec(m) for m in body.approved_models] if body.approved_models else None,
+            prompt_template=template_id,
+            template=template_def,
             max_changed_files=body.max_changed_files,
             max_patch_bytes=body.max_patch_bytes,
             minimum_approvals=body.minimum_approvals,
+            context_files=[g.strip() for g in body.context_files if g.strip()] if body.context_files else None,
         )
         t0 = time.perf_counter()
         try:
@@ -248,7 +392,16 @@ def create_app(state: GuiState) -> FastAPI:
         st = repo_status(repo, state.chain)
         st["id"] = name
         if st.get("policy"):
-            st["approved_models"] = [format_model(m) for m in st["policy"]["review"]["approved_models"]]
+            approved = st["policy"]["review"]["approved_models"]
+            st["approved_models"] = [format_model(m) for m in approved]
+            # Concrete versions to offer (ranges expanded), then other common models.
+            st["model_choices"] = model_choices(st["policy"])
+            st["provider_keys"] = _provider_keys({c["provider"] for c in st["model_choices"]})
+            try:
+                t = policy_template(st["policy"])
+                st["template"] = {"id": t.id, "builtin": t.builtin, "hash": t.hash, "description": t.description}
+            except Exception as e:
+                st["template"] = {"id": st["policy"]["review"]["prompt_template"], "error": str(e)}
         st["repo_config"] = repo.config
         return st
 
@@ -330,10 +483,11 @@ def create_app(state: GuiState) -> FastAPI:
                 raise HTTPException(409, "a submission for this repository is already running")
             opts = SubmitOptions(
                 message=body.message or None,
-                model=parse_model_spec(body.model) if body.model else None,
+                model=parse_model_choice(body.model) if body.model else None,
                 register=body.register_on_chain,
                 dry_run=body.dry_run,
                 bad_request=body.bad_request or None,
+                force=body.force,
             )
             sub = Submission(repo, state.profile, state.attestor(), state.chain, opts)
             state.jobs[sub.request_id] = sub
@@ -364,16 +518,17 @@ def create_app(state: GuiState) -> FastAPI:
 
 
 def serve(*, host="127.0.0.1", port=8765, workspace=".", seeds_dir=None, profiles_dir=None,
-          profile_path=None, attestor_url=None, chain_state=None, open_browser=True):
+          profile_path=None, attestor_url=None, chain_state=None, open_browser=True, env_file=None):
     import uvicorn
 
-    state = GuiState(workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state)
+    state = GuiState(workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file)
     app = create_app(state)
     url = f"http://{host}:{port}/"
     print(f"DOSR client GUI on {url}")
     print(f"  workspace : {state.workspace}")
     print(f"  attestor  : {state.attestor().base_url}")
     print(f"  chain     : {state.chain.state_path}")
+    print(f"  API keys  : {state.keys.env_file or 'this session only (no --env-file)'}")
     if open_browser and not os.environ.get("DOSR_NO_BROWSER"):
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port, log_level="warning")

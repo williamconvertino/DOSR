@@ -3,11 +3,25 @@
 Python / FastAPI server. It independently verifies a proposed `parent -> candidate`
 transition (policy, chain state, Git bundle), runs the reviewer, and signs an EIP-712
 attestation over the result. Model backends (`attestor/reviewers.py`): `mock`
-(approves anything passing the checks) and any OpenAI-compatible chat-completions
-provider. `zhipu` (GLM) is built in; others (OpenAI, DeepSeek, Qwen, ...) are one entry
-in `BUILTIN_PROVIDERS` or in the JSON file named by `ATTESTOR_PROVIDERS_FILE`. Models
-are called with the contributor's own key from the `X-DOSR-Provider-Key` header, which
-is never stored.
+(approves anything passing the checks), plus built-in `openai`, `anthropic` (Claude,
+Messages API), `gemini` (Google, OpenAI-compatible endpoint) and `zhipu` (GLM). Other
+OpenAI-compatible providers (DeepSeek, Qwen, ...) are one entry in `BUILTIN_PROVIDERS` or in
+the JSON file named by `ATTESTOR_PROVIDERS_FILE`. Models are called with the contributor's
+own key from the `X-DOSR-Provider-Key` header, which is never stored.
+
+Policies name models as `provider/model@version`. For providers with dated snapshots the
+version is appended to get the exact model id called (`openai/gpt-4o@2024-08-06` →
+`gpt-4o-2024-08-06`, `anthropic/claude-sonnet-4-5@20250929` → `claude-sonnet-4-5-20250929`);
+`stable` (or Zhipu's `api-v4`) means "send the model name as-is" for ids the provider already
+pins (`gemini-2.5-pro`, `claude-opus-5-5`). The list of common models lives in
+`packages/protocol/dosr_protocol/models.py`.
+
+Fixed call parameters (part of what the attestor vouches for): one user message with the
+prompt, temperature 0 and JSON-object output where the API supports them. Exceptions, set per
+model prefix in `BUILTIN_PROVIDERS`: OpenAI reasoning models (`gpt-5*`, `o1/o3/o4*`) take no
+temperature and use `reasoning_effort: low`; Gemini 2.5+/3 use `reasoning_effort: low`; Claude
+has no JSON mode (the prompt asks for one JSON object), and Claude 5 models use the default
+temperature.
 
 ## Run
 
@@ -84,12 +98,13 @@ gets `409 missing_prerequisites`.
 | `DOSR_CHAIN_STATE` | `~/.dosr/mock-chain/state.json` |
 | `ATTESTOR_CACHE_DIR` | `~/.dosr/attestor-cache` |
 | `ATTESTOR_MAX_BUNDLE_BYTES` | `52428800` (50 MB) |
-| `ATTESTOR_PROVIDERS_FILE` | none. JSON `{"<provider>": {"url": ..., "extra_body": {...}, "model_extra": {"<model prefix>": {...}}}}` adds or overrides OpenAI-compatible providers |
+| `ATTESTOR_PROVIDERS_FILE` | none. JSON `{"<provider>": {"url": ..., "api": "chat-completions" \| "anthropic-messages", "extra_body": {...}, "model_extra": {"<model prefix>": {...}}, "snapshot": "<regex>", "token_param": "max_tokens"}}` adds or overrides providers (a `null` value in `extra_body`/`model_extra` removes that field) |
 
 ## Not implemented yet
 
-1. Providers whose API is not OpenAI-compatible (e.g. Anthropic's Messages API) need
-   their own backend class in `reviewers.py`.
+1. Providers whose API is neither OpenAI-compatible nor Anthropic's Messages API need their own
+   backend class in `reviewers.py`. The OpenAI/Claude/Gemini backends are tested against fake
+   HTTP transports only; they have not been run against the live APIs yet.
 2. `minimum_approvals > 1` (several models / attestors).
 3. Per-client rate limiting, similar-request cache, prompt-injection detection.
 4. Read the chain over RPC instead of the mock state file; fetch missing parents
