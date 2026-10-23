@@ -12,6 +12,7 @@
     <div class="brand"><span class="logo">◆</span> DOSR <span class="muted small">client <span id="version"></span></span></div>
     <div class="topbar-right">
       <div id="attestor-pill" class="pill pill-unknown" title="Attestor status"><span class="dot"></span><span id="attestor-text">attestor…</span></div>
+      <button id="p2p-pill" class="pill pill-unknown pill-btn" title="P2P: IPFS status, peers, inbox, import"><span class="dot"></span><span id="p2p-text">P2P…</span><span id="inbox-count" class="count-badge" hidden></span></button>
       <button id="keys-btn" class="btn btn-small btn-ghost" title="Add or replace your model provider API keys">🔑 API keys</button>
       <label class="profile-select" title="Active client profile (who is committing/submitting)">
         <span id="profile-avatar" class="avatar">?</span>
@@ -24,7 +25,10 @@
     <aside class="sidebar">
       <div class="sidebar-head">
         <h2>Repositories</h2>
-        <button id="new-repo-btn" class="btn btn-small btn-primary">+ New</button>
+        <div class="sidebar-actions">
+          <button id="import-btn" class="btn btn-small" title="Clone a repository another device shared (share code)">Import</button>
+          <button id="new-repo-btn" class="btn btn-small btn-primary">+ New</button>
+        </div>
       </div>
       <ul id="repo-list" class="repo-list"></ul>
       <div class="sidebar-foot muted small">
@@ -36,8 +40,9 @@
     <main id="main">
       <section id="empty-state" class="empty">
         <h1>Welcome to DOSR</h1>
-        <p>Create a repository to get started, or pick one from the sidebar.</p>
+        <p>Create a repository to get started, pick one from the sidebar, or import one another device shared.</p>
         <button class="btn btn-primary" onclick="openNewRepo()">Create a repository</button>
+        <button class="btn" onclick="openP2P('import')">Import from a share code</button>
       </section>
 
       <section id="repo-view" hidden>
@@ -55,6 +60,7 @@
           <button data-tab="changes">Changes <span id="changes-count" class="count"></span></button>
           <button data-tab="submit">Submit PR</button>
           <button data-tab="history">History</button>
+          <button data-tab="share">Share (P2P)</button>
           <button data-tab="config">Config</button>
         </nav>
 
@@ -153,6 +159,11 @@
           <div id="history-detail" class="card" hidden></div>
         </div>
 
+        <!-- Share (P2P) -->
+        <div class="tab-panel" data-panel="share" hidden>
+          <div id="share-view"></div>
+        </div>
+
         <!-- Config -->
         <div class="tab-panel" data-panel="config" hidden>
           <div id="config-view"></div>
@@ -235,6 +246,42 @@
       <div id="keys-list" class="keys-list"></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-primary" onclick="closeModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- P2P dialog: this device, peers, inbox, import -->
+  <div id="p2p-modal" class="modal modal-top" hidden>
+    <div class="modal-card modal-mid" role="dialog" aria-labelledby="p2p-title">
+      <h2 id="p2p-title">P2P sharing</h2>
+      <p class="muted small">Repositories travel between devices over IPFS as a git bundle plus the signed attestation for every accepted PR. A <strong>share code</strong> (an IPFS CID) points at one published state. Importing it re-checks the bundle and every signature before your copy moves. (Dev stand-in for the chain: until the contract exists, share codes are passed by hand or through the peer inbox.)</p>
+      <section class="p2p-section">
+        <h3>Import a share code</h3>
+        <form id="import-form" class="import-form" onsubmit="submitImport(event)">
+          <input id="import-share" placeholder="bafy… (or local:… from this computer)" spellcheck="false" aria-label="Share code" required>
+          <input id="import-head" placeholder="expected commit (optional)" spellcheck="false" aria-label="Expected commit hash">
+          <button class="btn btn-primary" id="import-submit" type="submit">Import / pull</button>
+        </form>
+        <div id="import-result"></div>
+      </section>
+      <section class="p2p-section">
+        <h3>Inbox <span class="muted small">share codes other devices sent here</span></h3>
+        <div id="inbox-list"></div>
+      </section>
+      <section class="p2p-section">
+        <h3>Peers <span class="muted small">devices that get your share codes when you publish</span></h3>
+        <div id="peer-list"></div>
+        <form class="import-form" onsubmit="addPeer(event)">
+          <input id="peer-url" placeholder="other device's address, e.g. http://192.168.1.20:8790" spellcheck="false" aria-label="Peer address">
+          <button class="btn" type="submit" id="peer-add">Add peer</button>
+        </form>
+      </section>
+      <section class="p2p-section">
+        <h3>This device</h3>
+        <div id="device-info"></div>
+      </section>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closeP2P()">Done</button>
       </div>
     </div>
   </div>

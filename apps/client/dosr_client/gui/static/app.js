@@ -26,6 +26,7 @@ const ui = {
   keys: [],
   keysFile: null,
   armed: {},
+  p2p: null,
 };
 
 async function api(path, opts = {}) {
@@ -430,6 +431,7 @@ function switchTab(tab) {
   if (tab === "changes") loadDiff();
   if (tab === "history") loadHistory();
   if (tab === "config") loadConfig();
+  if (tab === "share") loadShare();
 }
 
 // ------------------------------------------------------------ files
@@ -674,6 +676,7 @@ function renderResult(job, target, repoId) {
   if (info.prompt) kv.push(["Prompt", `${fmtNum(info.prompt.words)} words · ~${fmtNum(info.prompt.est_tokens)} tokens · <code title="${esc(info.prompt.sha256)}">sha256 ${esc(info.prompt.sha256.slice(0, 18))}…</code>`]);
   if (info.forced) kv.push(["Forced", `<span class="badge warn">local validation skipped (simulated modified client)</span>`]);
   if (info.chain_event) kv.push(["Chain", `canonical HEAD → <code>${esc(shortOid(info.chain_event.candidate_git_oid))}</code> (block ${info.chain_event.block})`]);
+  if (info.published) kv.push(["Shared", `share code ${shareCodeHtml(info.published.share)} <span class="muted small">${info.published.backend === "ipfs" ? "on IPFS" : "local store only (IPFS not running)"}${announcedText(info.published.announced)}</span>`]);
   const m = info.pr_metrics?.total;
   if (m) kv.push(["PR size", `${fmtNum(m.words)} words · ${fmtNum(m.chars)} chars · ~${fmtNum(m.est_tokens)} tokens <span class="muted">(est. chars/4)</span>`]);
   const t = info.transfer;
@@ -895,7 +898,7 @@ async function createRepo(ev) {
       },
     });
     closeModal();
-    toast(`Created ${res.repo.name} (genesis ${shortOid(res.genesis_git_oid)}) in ${fmtMs(res.took_ms)}`);
+    toast(`Created ${res.repo.name} (genesis ${shortOid(res.genesis_git_oid)}) in ${fmtMs(res.took_ms)}` + (res.published ? " · published for sharing" : ""));
     await loadState();
     await selectRepo(res.id);
     switchTab("editor");
@@ -1019,11 +1022,242 @@ async function saveTemplate(overwrite = false) {
 
 function closeTemplateEditor() { $("#tpl-modal").hidden = true; }
 
+// ------------------------------------------------------------ P2P (IPFS sharing)
+
+function shareCodeHtml(code) {
+  return `<code class="small" title="${esc(code)}">${esc(code.length > 30 ? code.slice(0, 18) + "…" + code.slice(-8) : code)}</code> <button type="button" class="btn btn-small btn-ghost" data-copy="${esc(code)}">Copy</button>`;
+}
+
+function announcedText(list) {
+  if (!list || !list.length) return "";
+  return ` · sent to ${list.filter((a) => a.ok).length}/${list.length} peer(s)`;
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("Copied"); }
+  catch {
+    const t = document.createElement("textarea");
+    t.value = text; document.body.appendChild(t); t.select();
+    try { document.execCommand("copy"); toast("Copied"); } catch { toast("Copy failed: select the text instead", true); }
+    t.remove();
+  }
+}
+
+const ago = (ts) => {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(ts * 1000).toLocaleString();
+};
+
+async function pollP2P() {
+  const pill = $("#p2p-pill");
+  try {
+    const p = (ui.p2p = await api("/api/p2p"));
+    if (!p.enabled) {
+      pill.className = "pill pill-btn pill-down";
+      $("#p2p-text").textContent = "P2P off";
+    } else if (p.backend === "ipfs") {
+      pill.className = "pill pill-btn pill-up";
+      $("#p2p-text").textContent = `IPFS · ${p.ipfs.peers ?? "?"} peer${p.ipfs.peers === 1 ? "" : "s"}`;
+      pill.title = `IPFS node ${p.ipfs.peer_id}\n${p.ipfs.agent || ""}\nClick for peers, inbox and import`;
+    } else {
+      pill.className = "pill pill-btn pill-local";
+      $("#p2p-text").textContent = "local store (no IPFS)";
+      pill.title = `${p.ipfs_error || "IPFS not running"}\nPublishing still works on this computer. Start IPFS to share with other devices.`;
+    }
+    const n = p.inbox_new || 0;
+    $("#inbox-count").hidden = !n;
+    $("#inbox-count").textContent = n;
+    if (!$("#p2p-modal").hidden) renderP2P(false);
+  } catch {
+    pill.className = "pill pill-btn pill-down";
+    $("#p2p-text").textContent = "P2P ?";
+  }
+}
+
+async function openP2P(focus) {
+  $("#p2p-modal").hidden = false;
+  $("#import-result").innerHTML = "";
+  await renderP2P(true);
+  if (focus === "import") $("#import-share").focus();
+}
+
+function closeP2P() { $("#p2p-modal").hidden = true; }
+
+async function renderP2P(full) {
+  const p = ui.p2p || (ui.p2p = await api("/api/p2p"));
+  const { items } = await api("/api/p2p/inbox");
+  const visible = items.filter((i) => i.status !== "dismissed");
+  $("#inbox-list").innerHTML = visible.length ? visible.map((i) => {
+    const same = i.local_head && i.local_head === i.canonical_head;
+    const what = i.local_repo ? (same ? "you already have this HEAD" : `updates your <strong>${esc(i.local_repo)}</strong>`) : "new repository";
+    return `<div class="inbox-item ${i.status === "new" ? "new" : ""}">
+      <div class="what"><strong>${esc(i.name)}</strong> @ <code>${esc(shortOid(i.canonical_head, 10))}</code> · ${i.accepted_transitions} accepted PR(s)
+        <div class="muted small">from ${esc(i.from_name || "?")}${i.device ? " on " + esc(i.device) : ""} · ${ago(i.received_at)} · ${what}${i.status === "pulled" ? " · pulled" : ""}</div>
+        <div class="muted small"><code>${esc(i.share)}</code></div></div>
+      <div class="acts">
+        <button type="button" class="btn btn-small ${same ? "" : "btn-primary"}" data-pull="${esc(i.id)}">${i.local_repo ? "Pull" : "Import"}</button>
+        <button type="button" class="btn btn-small btn-ghost" data-dismiss="${esc(i.id)}" title="Hide">✕</button>
+      </div></div>`;
+  }).join("") : `<p class="muted small">Nothing yet. When a peer publishes, its share code shows up here${p.inbox_url ? "" : " (start the GUI with --p2p-port, as demo.py does, to receive them)"}.</p>`;
+  $("#inbox-list").querySelectorAll("[data-pull]").forEach((b) => (b.onclick = () => {
+    const item = items.find((x) => x.id === b.dataset.pull);
+    runImport(item.share, null, item.id, b);
+  }));
+  $("#inbox-list").querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
+    await api(`/api/p2p/inbox/${encodeURIComponent(b.dataset.dismiss)}/dismiss`, { method: "POST" });
+    pollP2P();
+  }));
+
+  $("#peer-list").innerHTML = (p.peers || []).length ? p.peers.map((x) => `<div class="peer-item">
+      <div><strong>${esc(x.device || "device")}</strong> <code class="small">${esc(x.url)}</code>
+        <div class="muted small">${x.via === "introduced" ? "added you" : "added by you"}${x.last_seen ? " · seen " + ago(x.last_seen) : ""}${x.peer_id ? ` · IPFS <code>${esc(x.peer_id.slice(0, 14))}…</code>` : ""}</div></div>
+      <div class="acts"><button type="button" class="btn btn-small btn-ghost" data-rm="${esc(x.url)}">Remove</button></div></div>`).join("")
+    : `<p class="muted small">No peers yet. Add the other device's address (shown under <em>This device</em> on its screen). Optional: you can always paste share codes by hand.</p>`;
+  $("#peer-list").querySelectorAll("[data-rm]").forEach((b) => (b.onclick = async () => {
+    await api(`/api/p2p/peers?url=${encodeURIComponent(b.dataset.rm)}`, { method: "DELETE" });
+    pollP2P();
+  }));
+
+  if (!full) return;
+  const rows = [["Device", esc(p.device)]];
+  rows.push(["Your address", p.inbox_url
+    ? `<code>${esc(p.inbox_url)}</code> <button type="button" class="btn btn-small btn-ghost" data-copy="${esc(p.inbox_url)}">Copy</button> <span class="muted small">give this to the other device (Add peer)</span>`
+    : `<span class="muted">peer inbox not running (start with <code>demo.py up</code> or <code>dosr gui --p2p-port 8790</code>)</span>`]);
+  if (p.backend === "ipfs") {
+    rows.push(["Storage", `<span class="ok-text">IPFS</span> <code class="small">${esc(p.ipfs_api)}</code> · ${esc(p.ipfs.agent || "")} · ${p.ipfs.peers ?? "?"} connected peer(s)`]);
+    rows.push(["IPFS peer ID", `<code class="small">${esc(p.ipfs.peer_id)}</code>`]);
+    rows.push(["IPFS addresses", (p.ipfs_addrs || []).length ? `<ul class="addr-list">${p.ipfs_addrs.map((a) => `<li><code>${esc(a)}</code></li>`).join("")}</ul>` : "—"]);
+    rows.push(["Dial a node", `<form class="import-form" onsubmit="dialAddr(event)"><input id="dial-addr" placeholder="/ip4/192.168.1.20/tcp/4001/p2p/12D3Koo…" spellcheck="false" aria-label="IPFS multiaddress"><button class="btn btn-small" type="submit">Connect</button></form>`]);
+  } else if (p.enabled) {
+    rows.push(["Storage", `<span class="bad-text">local store</span> <code class="small">${esc(p.local_store)}</code><br><span class="muted small">${esc(p.ipfs_error || "IPFS not running")}. Share codes made now (<code>local:…</code>) only work on this computer. Start IPFS (<code>demo.py ipfs</code>) to share with another device.</span>`]);
+  }
+  $("#device-info").innerHTML = `<dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+}
+
+async function submitImport(ev) {
+  ev.preventDefault();
+  await runImport($("#import-share").value.trim(), $("#import-head").value.trim() || null, null, $("#import-submit"));
+}
+
+async function runImport(share, expectHead, inboxId, btn, adopt = false) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Fetching…";
+  $("#import-result").innerHTML = `<p class="muted small">Fetching the share manifest and bundle${ui.p2p?.backend === "ipfs" ? " over IPFS (up to a minute if the other device is hard to reach)" : ""}…</p>`;
+  try {
+    const r = await api("/api/p2p/import", { method: "POST", body: { share, expect_head: expectHead, inbox_id: inboxId, adopt } });
+    const verb = r.action === "clone" ? "Cloned" : r.status === "up-to-date" ? "Already up to date:" : r.status === "older" ? "Nothing to apply:" : r.status === "replaced" ? "Adopted their history for" : "Pulled";
+    const applied = r.applied.map((a) => `<li>block ${a.block}: <code>${esc(shortOid(a.parent, 8))}</code> → <code>${esc(shortOid(a.candidate, 8))}</code> · signed by <code>${esc(a.attestor.slice(0, 10))}…</code> · ${esc(a.model)}</li>`).join("");
+    $("#import-result").innerHTML = `<div class="decision approved"><h2>${verb} ${esc(r.name)}</h2><dl class="kv">
+      <dt>Canonical HEAD</dt><dd><code>${esc(r.canonical_head)}</code></dd>
+      <dt>Verified</dt><dd>bundle sha256 ✓ · history starts at the genesis with the registered policy ✓ · ${r.applied.length} signed transition(s) checked and applied${r.registered ? " · genesis registered on your mock chain (trusted from the share code)" : ""}${applied ? `<ul class="steps-list">${applied}</ul>` : ""}</dd>
+      <dt>Working copy</dt><dd>${esc(r.working_copy)}</dd>
+      <dt>From</dt><dd>${esc(r.published_by || "?")}${r.device ? " on " + esc(r.device) : ""} · ${fmtBytes(r.bundle_bytes)} in ${fmtMs(r.took_ms)}</dd>
+      </dl></div>${r.warnings.length ? `<div class="warn-box"><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}`;
+    toast(`${verb} ${r.name}`);
+    $("#import-share").value = "";
+    $("#import-head").value = "";
+    await loadState();
+    await pollP2P();
+    if (r.id === ui.repoId) { await refreshRepo(); switchTab(ui.tab); }
+    else if (r.action === "clone") await selectRepo(r.id);
+  } catch (e) {
+    const conflict = /^conflict/.test(e.message);
+    $("#import-result").innerHTML = `<div class="error-box"><strong>Import failed.</strong> ${esc(e.message)}
+      ${conflict ? `<p class="small">Without a real chain, both devices accepted a change on the same parent. Dev fix: keep the other device's history and drop yours for this repo.</p><button type="button" class="btn btn-small btn-danger" id="adopt-btn">Adopt their history (dev)</button>` : ""}</div>`;
+    if (conflict) $("#adopt-btn").onclick = () => runImport(share, expectHead, inboxId, $("#adopt-btn"), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function addPeer(ev) {
+  ev.preventDefault();
+  const url = $("#peer-url").value.trim();
+  if (!url) return;
+  const btn = $("#peer-add");
+  btn.disabled = true;
+  btn.textContent = "Connecting…";
+  try {
+    const r = await api("/api/p2p/peers", { method: "POST", body: { url } });
+    const ok = (r.dialed || []).filter((d) => d.ok).length;
+    toast(`Added ${r.peer.device || r.peer.url}` + (r.dialed?.length ? ` · IPFS connected (${ok}/${r.dialed.length} addresses)` : ""));
+    $("#peer-url").value = "";
+    await pollP2P();
+    renderP2P(true);
+  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; btn.textContent = "Add peer"; }
+}
+
+async function dialAddr(ev) {
+  ev.preventDefault();
+  try {
+    const r = await api("/api/p2p/connect", { method: "POST", body: { addr: $("#dial-addr").value } });
+    const res = r.results[0];
+    toast(res.ok ? "Connected" : res.error, !res.ok);
+    pollP2P();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadShare() {
+  const r = ui.repo;
+  const [info, p] = await Promise.all([api(`/api/repos/${encodeURIComponent(ui.repoId)}/p2p`), api("/api/p2p")]);
+  ui.p2p = p;
+  const last = info.last;
+  const current = last && last.canonical_head === r.canonical_head;
+  const where = (b) => (b === "ipfs" ? "IPFS" : "local store");
+  const pubRows = info.published.slice(0, 10).map((x) => `<tr><td>${ago(x.at)}</td><td><code class="small">${esc(x.share)}</code></td><td><code>${esc(shortOid(x.canonical_head, 8))}</code></td><td class="num">${x.accepted_transitions}</td><td>${where(x.backend)}</td></tr>`).join("");
+  const impRows = info.imported.slice(0, 10).map((x) => `<tr><td>${ago(x.at)}</td><td>${esc(x.from || "?")}${x.device ? " · " + esc(x.device) : ""}</td><td><code>${esc(shortOid(x.canonical_head, 8))}</code></td><td>${esc(x.status)}${x.applied ? ` (+${x.applied})` : ""}</td></tr>`).join("");
+  $("#share-view").innerHTML = `<div class="share-grid">
+    <div class="card"><h3>Share this repository</h3>
+      ${last ? `<div class="muted small">${current ? "Latest share code (current canonical HEAD):" : `Last published ${ago(last.at)} for an older HEAD; publish again to share the current one.`}</div>
+        <div class="share-code">${shareCodeHtml(last.share)}</div>
+        <div class="muted small">HEAD <code>${esc(shortOid(last.canonical_head))}</code> · ${last.accepted_transitions} accepted PR(s) · ${where(last.backend)}</div>`
+      : `<p class="muted small">Not published yet.</p>`}
+      <div class="panel-actions" style="margin-top:12px"><span class="muted small">Approved PRs are published automatically.</span>
+        <button type="button" class="btn btn-primary btn-small" id="publish-btn" onclick="publishRepo()" ${p.enabled ? "" : "disabled"}>Publish now</button></div>
+      ${p.enabled && p.backend !== "ipfs" ? `<div class="warn-box small">IPFS is not running: share codes go to the local store and only work on this computer. Start IPFS to share with another device.</div>` : ""}
+    </div>
+    <div class="card"><h3>On the other device</h3>
+      <ol class="steps-list">
+        <li>Both devices run DOSR (<code>demo.py up</code>) with IPFS on.</li>
+        <li>Send the share code: it reaches your peers' inboxes automatically, or paste it in chat.</li>
+        <li>There: <strong>Import</strong> (sidebar) → paste → <em>Import / pull</em>. The first import clones; later ones pull newly accepted PRs.</li>
+        <li>They edit and <em>Submit PR</em> to their own attestor; their new share code comes back here. <strong>Pull</strong> it from the inbox (P2P button, top right).</li>
+      </ol>
+      <p class="muted small">Optionally send the commit hash too (<code>${esc(shortOid(r.canonical_head, 10))}</code>) and enter it as the <em>expected commit</em>: the import then fails if the share code points anywhere else.</p>
+    </div>
+    <div class="card wide"><h3>Published</h3>${pubRows ? `<table class="mini"><thead><tr><th>When</th><th>Share code</th><th>HEAD</th><th class="num">PRs</th><th>Where</th></tr></thead><tbody>${pubRows}</tbody></table>` : `<p class="muted small">—</p>`}</div>
+    <div class="card wide"><h3>Imported from other devices</h3>${impRows ? `<table class="mini"><thead><tr><th>When</th><th>From</th><th>HEAD</th><th>Result</th></tr></thead><tbody>${impRows}</tbody></table>` : `<p class="muted small">—</p>`}</div>
+  </div>`;
+}
+
+async function publishRepo() {
+  const btn = $("#publish-btn");
+  btn.disabled = true;
+  btn.textContent = "Publishing…";
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(ui.repoId)}/publish`, { method: "POST" });
+    toast(`Published ${shortOid(r.canonical_head)} to ${r.backend === "ipfs" ? "IPFS" : "the local store"}${announcedText(r.announced)}`);
+    await loadShare();
+  } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = "Publish now"; }
+}
+
+// Copy buttons anywhere (share codes, addresses).
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-copy]");
+  if (b) copyText(b.dataset.copy);
+});
+
 // ------------------------------------------------------------ wiring
 
 function wire() {
   document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => switchTab(b.dataset.tab)));
   $("#new-repo-btn").onclick = openNewRepo;
+  $("#import-btn").onclick = () => openP2P("import");
+  $("#p2p-pill").onclick = () => openP2P();
+  $("#p2p-modal").addEventListener("click", (e) => { if (e.target.id === "p2p-modal") closeP2P(); });
   $("#nr-preset").onchange = () => { updatePresetPreview(); setModelRows(presetModelSpecs()); };
   $("#nr-seed").onchange = onSeedChange;
   $("#mp-rows").addEventListener("change", onModelRowsChange);
@@ -1083,7 +1317,11 @@ function wire() {
   };
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s" && ui.tab === "editor") { e.preventDefault(); saveFile(); }
-    if (e.key === "Escape") { if (!$("#tpl-modal").hidden) closeTemplateEditor(); else closeModal(); }
+    if (e.key === "Escape") {
+      if (!$("#tpl-modal").hidden) closeTemplateEditor();
+      else if (!$("#p2p-modal").hidden) closeP2P();
+      else closeModal();
+    }
   });
 }
 
@@ -1095,5 +1333,7 @@ function wire() {
     if (ui.state.repos.length) await selectRepo(ui.state.repos[0].id);
   } catch (e) { toast(e.message, true); }
   pollAttestor();
+  pollP2P();
   setInterval(pollAttestor, 5000);
+  setInterval(pollP2P, 5000);
 })();

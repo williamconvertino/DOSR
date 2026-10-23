@@ -5,6 +5,8 @@ Global options (before the subcommand):
     --profile FILE        client profile JSON (default: $DOSR_PROFILE or git identity)
     --attestor-url URL    attestor base URL (default: $DOSR_ATTESTOR_URL, profile, or http://127.0.0.1:8080)
     --chain-state FILE    mock chain state file (default: $DOSR_CHAIN_STATE or ~/.dosr/mock-chain/state.json)
+    --ipfs-api URL        IPFS (Kubo) RPC API (default: $DOSR_IPFS_API or http://127.0.0.1:5001)
+    --p2p MODE            auto (IPFS if running, else local store) | ipfs | local | off
 """
 
 import argparse
@@ -49,6 +51,9 @@ from .templates import (
     template_dirs,
     to_toml,
 )
+from .inbox import normalize_url, send_announcement
+from .ipfs import IpfsStore, LocalStore, P2PStore, StoreError
+from .p2p import P2PError, import_share, publish
 from .pipeline import BAD_REQUESTS, SubmitOptions, Submission, approved_model_spec, model_choices, parse_model_choice
 from .render import OUTCOME_STYLE, ms, progress_view, result_view, short, size
 from .repo_ops import commit_all, create_repository, register_existing, repo_status
@@ -65,6 +70,19 @@ def _ctx(args):
     chain = MockChain(args.chain_state) if args.chain_state else MockChain()
     attestor = AttestorClient(resolve_attestor_url(args.attestor_url, profile))
     return profile, chain, attestor
+
+
+def _store(args) -> P2PStore | None:
+    if args.p2p == "off":
+        return None
+    return P2PStore(IpfsStore(args.ipfs_api), LocalStore(args.local_store), mode=args.p2p)
+
+
+def _publisher(args, profile, chain):
+    store = _store(args)
+    if store is None:
+        return None
+    return lambda repo: publish(repo, chain, store, profile)
 
 
 def _repo(args) -> DosrRepo:
@@ -265,8 +283,9 @@ def cmd_submit(args):
         bundle_mode=args.bundle_mode,
         bad_request=args.bad_request,
         force=args.force,
+        publish=not args.no_publish,
     )
-    sub = Submission(repo, profile, attestor, chain, opts)
+    sub = Submission(repo, profile, attestor, chain, opts, _publisher(args, profile, chain))
     title = f"[bold]DOSR submit[/] · {repo.name} · {profile.name} → {attestor.base_url}"
 
     if args.json:
@@ -501,6 +520,80 @@ def cmd_models(args):
                   "Aliases: claude → anthropic, google → gemini.[/]")
 
 
+def cmd_publish(args):
+    profile, chain, _ = _ctx(args)
+    repo = _repo(args)
+    store = _store(args) or P2PStore(mode="auto")
+    with console.status("Publishing the canonical HEAD (git bundle + signed history)…"):
+        pub = publish(repo, chain, store, profile)
+    rows = [
+        ("Share code", Text(pub["share"], style="bold green")),
+        ("Stored in", "IPFS" if pub["backend"] == "ipfs" else "local store (IPFS not running: works on this computer only)"),
+        ("Canonical HEAD", pub["canonical_head"]),
+        ("Accepted PRs", str(pub["accepted_transitions"])),
+        ("Bundle", f"{pub['bundle']['id']} · {size(pub['bundle']['size_bytes'])}"),
+        ("Took", ms(pub["took_ms"])),
+    ]
+    console.print(Panel(_kv_table(rows), title=f"[bold green]Published {repo.name}", border_style="green"))
+    console.print(f"On the other device: [bold]dosr import {pub['share']}[/]")
+    for url in args.announce or []:
+        send_announcement(url, {"share": pub["share"], "repo_id": repo.config["repo_id"], "name": repo.name,
+                                "canonical_head": pub["canonical_head"],
+                                "accepted_transitions": pub["accepted_transitions"],
+                                "from_name": f"{profile.name} <{profile.email}>"})
+        console.print(f"[green]✓[/] announced to {normalize_url(url)}")
+
+
+def cmd_import(args):
+    _, chain, _ = _ctx(args)
+    store = _store(args) or P2PStore(mode="auto")
+    if args.workspace:
+        workspace = Path(args.workspace)
+    elif args.command == "pull":
+        workspace = _repo(args).path.parent
+    else:
+        workspace = Path(".")
+    with console.status("Fetching the share manifest and bundle…"):
+        res = import_share(workspace, chain, store, args.share, expect_head=args.expect_head, timeout=args.timeout,
+                           replace=args.adopt)
+    title = {"clone": "Cloned", "pull": "Pulled"}[res["action"]]
+    head = res["canonical_head"]
+    if res["previous_head"] and res["previous_head"] != head:
+        head += f"  (was {short(res['previous_head'])})"
+    rows = [
+        ("Repository", f"{res['name']}  ({res['path']})"),
+        ("Status", res["status"]),
+        ("Canonical HEAD", head),
+        ("Chain", ("genesis registered (trusted from the share code); " if res["registered"] else "")
+                  + f"{len(res['applied'])} signed transition(s) verified and applied"),
+        ("Working copy", res["working_copy"]),
+        ("Published by", (res["published_by"] or "?") + (f" on {res['device']}" if res.get("device") else "")),
+        ("Transferred", f"{size(res['bundle_bytes'])} bundle · {ms(res['took_ms'])}"),
+    ]
+    for a in res["applied"]:
+        rows.append((f"  block {a['block']}", f"{short(a['parent'])} → {short(a['candidate'])} · {a['model']}"))
+    console.print(Panel(_kv_table(rows), title=f"[bold green]{title} {res['name']}", border_style="green"))
+    for w in res["warnings"]:
+        console.print(f"[yellow]warning:[/] {w}")
+
+
+def cmd_p2p(args):
+    store = _store(args) or P2PStore(mode="auto")
+    st = store.status()
+    rows = [("Mode", st["mode"]), ("Backend", st["backend"]), ("IPFS API", st["ipfs_api"]),
+            ("Local store", st["local_store"])]
+    if st.get("ipfs"):
+        i = st["ipfs"]
+        rows += [("Peer ID", i["peer_id"]), ("Node", i.get("agent") or "?"), ("Connected peers", str(i["peers"])),
+                 ("Addresses", "\n".join(i["shareable_addresses"]) or "—")]
+    elif st.get("ipfs_error"):
+        rows.append(("IPFS", Text(st["ipfs_error"], style="yellow")))
+    console.print(Panel(_kv_table(rows), title="[bold]P2P storage", border_style="blue"))
+    if args.connect:
+        for r in store.ipfs.connect(args.connect):
+            console.print(("[green]✓[/] " if r["ok"] else "[red]✗[/] ") + r["addr"] + ("" if r["ok"] else f"  {r['error']}"))
+
+
 def cmd_gui(args):
     from .gui.server import serve
 
@@ -515,6 +608,12 @@ def cmd_gui(args):
         chain_state=args.chain_state,
         open_browser=not args.no_browser,
         env_file=args.env_file,
+        ipfs_api=args.ipfs_api,
+        local_store=args.local_store,
+        p2p_mode=args.p2p,
+        p2p_port=args.p2p_port,
+        p2p_host=args.p2p_host,
+        device=args.device,
     )
 
 
@@ -528,6 +627,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", help="client profile JSON (default: $DOSR_PROFILE or git identity)")
     p.add_argument("--attestor-url", help="attestor base URL")
     p.add_argument("--chain-state", help="mock chain state file")
+    p.add_argument("--ipfs-api", help="IPFS (Kubo) RPC API URL (default: $DOSR_IPFS_API or http://127.0.0.1:5001)")
+    p.add_argument("--local-store", help="fallback content store directory when IPFS is not running "
+                                         "(default: $DOSR_LOCAL_STORE or ~/.dosr/local-store)")
+    p.add_argument("--p2p", choices=["auto", "ipfs", "local", "off"], default="auto",
+                   help="where to publish repositories: auto = IPFS if the node is running, else the local store")
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     s = sub.add_parser("init", help="create a new DOSR repository (genesis + chain registration)")
@@ -574,6 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true",
                    help="send even if local validation fails (simulates a modified client; the attestor rejects)")
     s.add_argument("--no-register", action="store_true", help="do not submit an approval to the chain")
+    s.add_argument("--no-publish", action="store_true", help="do not publish the new HEAD to IPFS after approval")
     s.add_argument("--bundle-mode", choices=["full", "thin"])
     s.add_argument("--bad-request", choices=sorted(BAD_REQUESTS), metavar="MODE",
                    help="DEMO: send a deliberately bad request so the attestor rejects it. MODE is one of: "
@@ -599,6 +704,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("server", help="check attestor health and keys").set_defaults(func=cmd_server)
     sub.add_parser("register", help="register an existing repo's genesis on the chain").set_defaults(func=cmd_register)
     sub.add_parser("chain", help="show the mock chain state").set_defaults(func=cmd_chain)
+
+    s = sub.add_parser("publish", help="publish the canonical HEAD + signed history to IPFS; prints a share code")
+    s.add_argument("--announce", action="append", metavar="PEER_URL",
+                   help="also send the share code to a peer's inbox, e.g. http://192.168.1.20:8790 (repeatable)")
+    s.set_defaults(func=cmd_publish)
+
+    for name, helptext in (("import", "clone a shared repository (or update your copy) from a share code"),
+                           ("pull", "update this repository from a share code (same as import)")):
+        s = sub.add_parser(name, help=helptext)
+        s.add_argument("share", help="share code: an IPFS CID (bafy…) or local:<sha256>")
+        s.add_argument("--workspace", help="directory to clone into / look for the repo (import default: cwd)")
+        s.add_argument("--expect-head", metavar="OID", help="fail unless the share is for this commit (prefix ok)")
+        s.add_argument("--timeout", type=float, default=60, help="seconds to wait for IPFS to find the data")
+        s.add_argument("--adopt", action="store_true",
+                       help="DEV: on a conflict, discard this device's chain history for the repo and adopt the shared one")
+        s.set_defaults(func=cmd_import)
+
+    s = sub.add_parser("p2p", help="IPFS / local-store status (peer id, addresses, connected peers)")
+    s.add_argument("--connect", action="append", metavar="MULTIADDR", help="dial another IPFS node directly")
+    s.set_defaults(func=cmd_p2p)
 
     s = sub.add_parser("template", help="PR templates: list, show, create, check")
     tsub = s.add_subparsers(dest="template_cmd", required=True, metavar="ACTION")
@@ -634,6 +759,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--profiles", help="directory of client profiles to switch between")
     s.add_argument("--env-file", help="save API keys entered in the GUI to this .env file (default: this session only)")
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--p2p-port", type=int, help="run the peer inbox (dev channel for share codes) on this port, "
+                                                "reachable from the LAN; e.g. 8790")
+    s.add_argument("--p2p-host", default="0.0.0.0", help="interface for the peer inbox (default: all)")
+    s.add_argument("--device", help="name other devices see (default: $DOSR_DEVICE_NAME or the hostname)")
     s.set_defaults(func=cmd_gui)
     return p
 
@@ -648,7 +777,7 @@ def main(argv=None) -> int:
     try:
         return args.func(args) or 0
     except (ConfigError, PolicyError, PRFormatError, TemplateError, ChainError, AttestorError, GitError,
-            FileNotFoundError) as e:
+            FileNotFoundError, P2PError, StoreError, ValueError) as e:
         err.print(f"[bold red]error:[/] {e}")
         return 1
     except KeyboardInterrupt:

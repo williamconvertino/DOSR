@@ -21,6 +21,8 @@ def gui(tmp_path, chain, attestor, monkeypatch):
         profile_path=None,
         attestor_url=None,
         chain_state=chain.state_path,  # the attestor fixture reads the same chain
+        ipfs_api="http://127.0.0.1:9",  # no IPFS node: publishing falls back to the local store
+        local_store=tmp_path / "store",
     )
     # Route the GUI's attestor calls to the in-process attestor app.
     monkeypatch.setattr(state, "attestor", lambda: attestor)
@@ -212,3 +214,48 @@ def test_template_editor_endpoints(gui, tmp_path, monkeypatch):
     assert repo["policy"]["review"]["template"]["id"] == "gui-v1"
     assert "## History" in client.get("/api/repos/tpl/template").json()["preview"]
     assert client.post("/api/repos", json={"name": "x", "preset": "standard", "prompt_template": "nope"}).status_code == 400
+
+
+def test_p2p_publish_import_and_inbox(gui, tmp_path, monkeypatch):
+    """Device A (the fixture GUI) creates + submits; device B (a second GUI with its own
+    workspace and chain, same content store) imports from the share code / its inbox."""
+    from dosr_chain import MockChain
+    from dosr_client.inbox import create_inbox_app
+
+    client, state = gui
+    r = client.post("/api/repos", json={"name": "calc", "seed": "calculator-py", "preset": "standard"}).json()
+    assert r["published"]["backend"] == "local"  # auto-published at creation (no IPFS node here)
+
+    client.put("/api/repos/calc/file", json={"path": "NOTES.md", "content": "shared\n"})
+    job = wait_job(client, client.post("/api/repos/calc/submit", json={"message": "Add notes"}).json()["job_id"])
+    assert job["outcome"] == "approved"
+    publish_step = next(s for s in job["steps"] if s["id"] == "publish")
+    assert publish_step["status"] == "done" and job["info"]["published"]["accepted_transitions"] == 1
+    share = job["info"]["published"]["share"]
+    assert client.get("/api/repos/calc/p2p").json()["last"]["share"] == share
+
+    b_state = gui_server.GuiState(
+        workspace=tmp_path / "ws-b", seeds_dir=None, profiles_dir=DEMO / "clients", profile_path=None,
+        attestor_url=None, chain_state=tmp_path / "chain-b" / "state.json",
+        ipfs_api="http://127.0.0.1:9", local_store=tmp_path / "store", device="device-b")
+    b = TestClient(gui_server.create_app(b_state))
+    assert b.get("/api/p2p").json()["backend"] == "local"
+
+    # A's announcement lands in B's peer inbox; B pulls it from there.
+    inbox = TestClient(create_inbox_app(b_state.inbox, b_state.peers, b_state.hello))
+    assert inbox.get("/dosr/hello").json()["device"] == "device-b"
+    ann = {"share": share, "repo_id": r["repo"]["repo_id"], "name": "calc",
+           "canonical_head": job["info"]["chain_event"]["candidate_git_oid"], "accepted_transitions": 1,
+           "from_name": "Alice", "device": "device-a", "inbox_url": "http://10.0.0.5:8790"}
+    assert inbox.post("/dosr/announce", json=ann).json()["ok"]
+    assert inbox.post("/dosr/announce", json={**ann, "share": "not-a-cid"}).status_code == 422
+    items = b.get("/api/p2p/inbox").json()["items"]
+    assert len(items) == 1 and items[0]["local_repo"] is None
+    assert b.get("/api/p2p").json()["peers"][0]["url"] == "http://10.0.0.5:8790"
+
+    res = b.post("/api/p2p/import", json={"share": share, "inbox_id": items[0]["id"]}).json()
+    assert res["action"] == "clone" and res["id"] == "calc" and len(res["applied"]) == 1
+    repo_b = b.get("/api/repos/calc").json()
+    assert repo_b["in_sync"] and repo_b["canonical_head"] == ann["canonical_head"]
+    assert b.get("/api/p2p/inbox").json()["items"][0]["status"] == "pulled"
+    assert b.post("/api/p2p/import", json={"share": "garbage"}).status_code == 400

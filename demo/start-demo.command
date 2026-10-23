@@ -1,7 +1,7 @@
 #!/bin/bash
-# One-click DOSR demo (macOS; also works on Linux via `./demo/start-demo.command`).
-# Sets up demo/.venv on first run, then starts the attestor + client GUI and
-# opens the browser. Close this window (or Ctrl+C) to stop.
+# Local DOSR demo: one client on this computer (no IPFS). Sets up demo/.venv on first run,
+# then starts the attestor + client GUI and opens the browser.
+# (macOS; also works on Linux via `./demo/start-demo.command`.) Close this window (or Ctrl+C) to stop.
 cd "$(dirname "$0")/.." || exit 1
 
 fail() {
@@ -19,4 +19,4 @@ if [ ! -x "$VENV_PY" ]; then
     python3 demo/setup_env.py || fail
 fi
 
-"$VENV_PY" demo/demo.py up || fail
+"$VENV_PY" demo/demo.py up --no-ipfs --p2p-port 0 || fail
