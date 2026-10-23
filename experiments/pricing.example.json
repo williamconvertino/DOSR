@@ -1,5 +1,7 @@
 {
-  "_comment": "Copy to pricing.json (git-ignored) and fill in current prices from the provider's pricing page. Prices are per million tokens; cost columns stay empty for models not listed here.",
+  "_comment": "Copy to pricing.json (git-ignored) and fill in current prices from each provider's pricing page. Prices are per million tokens; keys must match the --model spec exactly. Cost columns stay empty, and --budget refuses to run, for paid models not listed here.",
   "zhipu/glm-4-plus@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"},
-  "zhipu/glm-4.6@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"}
+  "zhipu/glm-4.6@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"},
+  "openai/gpt-5@2025-08-07": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"},
+  "anthropic/<model>@latest": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"}
 }

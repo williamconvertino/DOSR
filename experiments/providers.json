@@ -1,0 +1,14 @@
+{
+  "openai": {
+    "url": "https://api.openai.com/v1/chat/completions",
+    "snapshot": "\\d{4}-\\d{2}-\\d{2}",
+    "token_param": "max_completion_tokens",
+    "model_extra": {
+      "gpt-5": {"temperature": null, "reasoning_effort": "low", "max_completion_tokens": 8192},
+      "o1": {"temperature": null, "reasoning_effort": "low", "max_completion_tokens": 8192},
+      "o3": {"temperature": null, "reasoning_effort": "low", "max_completion_tokens": 8192},
+      "o4": {"temperature": null, "reasoning_effort": "low", "max_completion_tokens": 8192},
+      "gpt-6": {"temperature": null, "reasoning_effort": "low", "max_completion_tokens": 8192}
+    }
+  }
+}

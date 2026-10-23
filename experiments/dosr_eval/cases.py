@@ -7,6 +7,11 @@ A case is a directory holding `case.json` (schema in experiments/README.md). Its
 - "demo":  a project/change pair from demo/projects (no copying of demo files).
 - "git":   two commits of a public repository, fetched by SHA. `reverse: true`
            proposes going back from `head` to `base` (e.g. undoing a security fix).
+- "patch": a commit of a public repository (`base`, fetched by SHA) plus a diff file
+           inside the case directory, applied on top of it (e.g. a SWE-bench patch).
+
+Cases may sit in nested directories (`cases/pilot-v1/<case>/case.json`); pointing
+--cases at a subdirectory selects that suite.
 
 Commits are made with a fixed identity and date, so the same case always yields the
 same OIDs and therefore the same prompt (and `review_input_hash`).
@@ -27,6 +32,7 @@ DEMO_PROJECTS = ROOT / "demo" / "projects"
 
 CATEGORIES = ("benign", "bug", "vuln", "injection", "deceptive")
 EXPECTED = ("approve", "reject")
+CHANGE_TYPES = ("files", "demo", "git", "patch")
 
 _IDENT = {
     "GIT_AUTHOR_NAME": "DOSR Eval",
@@ -78,8 +84,8 @@ def load_case(case_dir: Path) -> Case:
         raise CaseError(f"{path}: category must be one of {', '.join(CATEGORIES)}")
     if data["expected"] not in EXPECTED:
         raise CaseError(f"{path}: expected must be approve or reject")
-    if data["change"].get("type") not in ("files", "demo", "git"):
-        raise CaseError(f"{path}: change.type must be files, demo, or git")
+    if data["change"].get("type") not in CHANGE_TYPES:
+        raise CaseError(f"{path}: change.type must be one of {', '.join(CHANGE_TYPES)}")
     return Case(
         id=data["id"],
         category=data["category"],
@@ -95,7 +101,7 @@ def load_case(case_dir: Path) -> Case:
 
 
 def load_cases(cases_dir: Path, ids: list[str] | None = None) -> list[Case]:
-    cases = [load_case(p.parent) for p in sorted(Path(cases_dir).glob("*/case.json"))]
+    cases = [load_case(p.parent) for p in sorted(Path(cases_dir).glob("**/case.json"))]
     seen = set()
     for c in cases:
         if c.id in seen:
@@ -111,9 +117,11 @@ def load_cases(cases_dir: Path, ids: list[str] | None = None) -> list[Case]:
 
 # ---------------------------------------------------------------- materializing
 
-def _git(cwd: Path, *args: str, input: str | None = None) -> str:
+def _git(cwd: Path, *args: str, input: str | None = None, index: Path | None = None) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(_IDENT, GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    if index is not None:
+        env["GIT_INDEX_FILE"] = str(index)
     proc = subprocess.run(["git", "-c", "core.quotepath=off", *args], cwd=cwd, env=env,
                           input=input.encode() if input is not None else None, capture_output=True)
     if proc.returncode != 0:
@@ -173,9 +181,11 @@ def _files(case: Case, work: Path) -> Materialized:
                           case.change.get("delete", []), case.message)
 
 
-def _git_source(case: Case, work: Path, cache: Path) -> Materialized:
-    url, base, head = case.change["url"], case.change["base"], case.change["head"]
-    repo = cache / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".git")
+def _fetched(cache: Path, url: str, shas: list[str], shallow: bool = False) -> Path:
+    """A cached bare partial clone of `url` holding the given commits (with their
+    history, or only the commits themselves when `shallow`)."""
+    key = url + ("#shallow" if shallow else "")
+    repo = cache / (hashlib.sha256(key.encode()).hexdigest()[:16] + ".git")
     if not repo.is_dir():
         repo.mkdir(parents=True)
         _git(repo, "init", "-q", "--bare")
@@ -183,11 +193,17 @@ def _git_source(case: Case, work: Path, cache: Path) -> Materialized:
         # Partial clone: blobs are fetched lazily, only for the files the PR shows.
         _git(repo, "config", "remote.origin.promisor", "true")
         _git(repo, "config", "remote.origin.partialclonefilter", "blob:none")
-    missing = [sha for sha in (base, head)
+    missing = [sha for sha in shas
                if subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo,
                                  capture_output=True).returncode != 0]
     if missing:
-        _git(repo, "fetch", "-q", "--filter=blob:none", "origin", *missing)
+        _git(repo, "fetch", "-q", "--filter=blob:none", *(["--depth=1"] if shallow else []), "origin", *missing)
+    return repo
+
+
+def _git_source(case: Case, work: Path, cache: Path) -> Materialized:
+    url, base, head = case.change["url"], case.change["base"], case.change["head"]
+    repo = _fetched(cache, url, [base, head])
     base, head = _git(repo, "rev-parse", f"{base}^{{commit}}"), _git(repo, "rev-parse", f"{head}^{{commit}}")
 
     if case.change.get("reverse"):
@@ -208,10 +224,40 @@ def _git_source(case: Case, work: Path, cache: Path) -> Materialized:
     return Materialized(case, GitRepo(repo), parent, candidate, _git(repo, "rev-parse", "--show-object-format"))
 
 
+def _patch_source(case: Case, work: Path, cache: Path) -> Materialized:
+    if case.message is None:
+        raise CaseError(f"{case.id}: patch cases need a `message`")
+    url = case.change["url"]
+    repo = _fetched(cache, url, [case.change["base"]], shallow=True)
+    base = _git(repo, "rev-parse", f"{case.change['base']}^{{commit}}")
+    patch = (case.dir / case.change["patch"]).read_text("utf-8")
+    if not patch.endswith("\n"):
+        patch += "\n"
+    # Apply to a throwaway index built from base's tree: no checkout needed, and the
+    # partial clone fetches only the blobs the patch touches.
+    work.mkdir(parents=True, exist_ok=True)
+    index = work / f"{case.id}.index"
+    index.unlink(missing_ok=True)
+    try:
+        _git(repo, "read-tree", base, index=index)
+        _git(repo, "apply", "--cached", "--whitespace=nowarn", "-", input=patch, index=index)
+        tree = _git(repo, "write-tree", index=index)
+    except CaseError as e:
+        raise CaseError(f"{case.id}: patch does not apply to {base[:10]}: {e}")
+    finally:
+        index.unlink(missing_ok=True)
+    if tree == _git(repo, "rev-parse", f"{base}^{{tree}}"):
+        raise CaseError(f"{case.id}: patch changes nothing")
+    candidate = _git(repo, "commit-tree", tree, "-p", base, "-F", "-", input=case.message)
+    return Materialized(case, GitRepo(repo), base, candidate, _git(repo, "rev-parse", "--show-object-format"))
+
+
 def materialize(case: Case, work: Path, cache: Path) -> Materialized:
     kind = case.change["type"]
     if kind == "demo":
         return _demo(case, Path(work))
     if kind == "files":
         return _files(case, Path(work))
+    if kind == "patch":
+        return _patch_source(case, Path(work), Path(cache))
     return _git_source(case, Path(work), Path(cache))

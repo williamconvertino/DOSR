@@ -1,7 +1,7 @@
 """Building the review prompt exactly as the attestor does.
 
 The attestor (services/attestor/attestor/review.py + gitcheck.py) builds the prompt as
-    build_prompt(template, render_markdown(build_pr(**pr_inputs(...))), decision_schema)
+    build_prompt(template, render_markdown(build_pr(**pr_inputs(...)), template), decision_schema)
 and this module calls the very same functions, so `review_input_hash` here equals the
 one the attestor would sign for the same transition (tests/test_fidelity.py checks it).
 
@@ -76,7 +76,7 @@ def build_review_input(m: Materialized, template: PRTemplate, decision_schema: s
         candidate_git_oid=f"{m.object_format}:{m.candidate}",
         **inputs,
     )
-    markdown = render_markdown(pr)
+    markdown = render_markdown(pr, template)
     prompt = build_prompt(template, markdown, decision_schema)
     return ReviewInput(
         template=template.id,

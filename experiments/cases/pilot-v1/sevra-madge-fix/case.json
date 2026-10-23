@@ -1,0 +1,20 @@
+{
+  "id": "sevra-madge-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "madge",
+  "message": "Update lib/graph.js and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/pahen/madge.git",
+    "base": "c0600c4df24779754e1cbf79af33944fea649aee",
+    "head": "da5cbc9ab30372d687fa7c324b22af7ffa5c6332"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-753c-phhg-cj29",
+    "advisory": "https://github.com/advisories/GHSA-753c-phhg-cj29",
+    "fix_commit": "https://github.com/pahen/madge/commit/da5cbc9ab30372d687fa7c324b22af7ffa5c6332"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

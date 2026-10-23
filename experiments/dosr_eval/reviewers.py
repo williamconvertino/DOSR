@@ -2,13 +2,15 @@
 
 We import services/attestor/attestor/reviewers.py rather than reimplementing the call,
 so the request body (temperature 0, JSON-object output, max_tokens, provider extras)
-is exactly what production sends. The attestor discards the provider's `usage` field;
-we read it from the HTTP response with an httpx event hook, without changing the
-attestor's code.
+is exactly what production sends, for every provider the attestor knows: OpenAI,
+Gemini and Zhipu (chat-completions) and Anthropic (Messages API). The attestor
+discards the provider's `usage` field; we read it from the HTTP response with an httpx
+event hook, without changing the attestor's code, and normalize it to
+{"prompt_tokens", "completion_tokens"}.
 
-API keys come from `<PROVIDER>_API_KEY` (e.g. ZHIPU_API_KEY), the same variable the
-DOSR client uses, read from the environment or the repo's .env. Keys are never written
-to results.
+API keys come from the same variables the DOSR client reads (OPENAI_API_KEY,
+ANTHROPIC_API_KEY, GEMINI_API_KEY, ZHIPU_API_KEY, ...; see dosr_protocol.models), from
+the environment or the repo's .env. Keys are never written to results.
 """
 
 import os
@@ -18,9 +20,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+from dosr_protocol.models import key_envs
 
 ROOT = Path(__file__).resolve().parents[2]
 ATTESTOR_DIR = ROOT / "services" / "attestor"
+
+# Providers that cost nothing to call. Anything else is a paid call and needs --paid.
+FREE_PROVIDERS = {"mock"}
 
 
 def attestor_reviewers():
@@ -54,9 +60,27 @@ class ModelSpec:
         # What reviewers.*.complete() reads from the request's `review` block.
         return SimpleNamespace(provider=self.provider, model=self.model, model_version=self.version)
 
+    @property
+    def paid(self) -> bool:
+        return self.provider not in FREE_PROVIDERS
+
+
+def normalize_usage(usage) -> dict | None:
+    """Chat-completions `usage` as is; Anthropic's input/output_tokens renamed to match."""
+    if not isinstance(usage, dict):
+        return None
+    if "prompt_tokens" in usage or "completion_tokens" in usage:
+        return usage
+    if "input_tokens" in usage or "output_tokens" in usage:
+        # Cached prompt tokens are billed too; count them as prompt tokens.
+        prompt = sum(usage.get(k) or 0 for k in
+                     ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return {"prompt_tokens": prompt, "completion_tokens": usage.get("output_tokens") or 0, "raw": usage}
+    return usage
+
 
 class UsageRecorder:
-    """httpx response hook: keeps the `usage` object of the last chat-completions reply."""
+    """httpx response hook: keeps the (normalized) `usage` object of the last model reply."""
 
     def __init__(self):
         self.last: dict | None = None
@@ -70,7 +94,7 @@ class UsageRecorder:
             usage = response.json().get("usage")
         except (ValueError, AttributeError):
             usage = None
-        self.last = usage if isinstance(usage, dict) else None
+        self.last = normalize_usage(usage)
 
 
 def load_dotenv(path: Path = ROOT / ".env") -> None:
@@ -84,7 +108,13 @@ def load_dotenv(path: Path = ROOT / ".env") -> None:
 
 
 def api_key_env(provider: str) -> str:
-    return "".join(c if c.isalnum() else "_" for c in provider).upper() + "_API_KEY"
+    """The variable to set for `provider` (the first one the DOSR client looks at)."""
+    envs = key_envs(provider)
+    return envs[0] if envs else ""
+
+
+def find_key(provider: str) -> str | None:
+    return next((os.environ[e] for e in key_envs(provider) if os.environ.get(e)), None)
 
 
 class Backend:
@@ -99,13 +129,18 @@ class Backend:
             providers = rv.load_providers(providers_file)
             if spec.provider not in providers:
                 raise ValueError(f"unknown provider {spec.provider!r} (known: mock, {', '.join(sorted(providers))})")
+            provider = providers[spec.provider]
+            if provider.api not in rv.BACKENDS:
+                raise ValueError(f"provider {spec.provider!r}: unknown api {provider.api!r}")
             if http is None:
                 http = httpx.Client(timeout=timeout)
             hooks = http.event_hooks
             http.event_hooks = {**hooks, "response": [*hooks.get("response", []), self.usage]}
-            self.reviewer = rv.ChatCompletionsReviewer(spec.provider, providers[spec.provider], http=http)
+            # The attestor's backend class for this provider's API (chat-completions or
+            # anthropic-messages), so the request is what the attestor would send.
+            self.reviewer = rv.BACKENDS[provider.api](spec.provider, provider, http=http)
         self.needs_key = self.reviewer.needs_key
-        self.key = os.environ.get(api_key_env(spec.provider)) if self.needs_key else None
+        self.key = find_key(spec.provider) if self.needs_key else None
 
     def complete(self, prompt: str) -> tuple[str, dict | None]:
         """Raw model output (as the attestor would hash it) and the provider's usage, if any."""
