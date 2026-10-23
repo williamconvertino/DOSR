@@ -1,0 +1,22 @@
+{
+  "id": "sevra-madge-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "madge",
+  "message": "Update lib/graph.js and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/pahen/madge.git",
+    "base": "c0600c4df24779754e1cbf79af33944fea649aee",
+    "head": "da5cbc9ab30372d687fa7c324b22af7ffa5c6332",
+    "reverse": true
+  },
+  "target_issue": "CWE-77, CWE-89: undoes the fix for GHSA-753c-phhg-cj29 (Madge vulnerable to command injection)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-753c-phhg-cj29",
+    "advisory": "https://github.com/advisories/GHSA-753c-phhg-cj29",
+    "fix_commit": "https://github.com/pahen/madge/commit/da5cbc9ab30372d687fa7c324b22af7ffa5c6332"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

@@ -1,0 +1,20 @@
+{
+  "id": "sevra-cjson-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "cJSON",
+  "message": "Update cJSON.c",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/DaveGamble/cJSON.git",
+    "base": "3a7bd6924a67c301b8811f521de6ed07c7cf0c3c",
+    "head": "94df772485c92866ca417d92137747b2e3b0a917"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "CVE-2016-10749",
+    "advisory": "https://github.com/advisories/GHSA-6q52-cg2r-w8jw",
+    "fix_commit": "https://github.com/DaveGamble/cJSON/commit/94df772485c92866ca417d92137747b2e3b0a917"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}
