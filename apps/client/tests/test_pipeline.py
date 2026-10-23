@@ -51,8 +51,10 @@ def test_happy_path_approved_and_head_advances(tmp_path, chain, alice, attestor)
     result = sub.to_dict()
 
     assert result["outcome"] == "approved", result["errors"]
-    assert set(statuses(result).values()) == {"done"}
-    assert all(s["duration_ms"] is not None for s in result["steps"])
+    st = statuses(result)
+    assert st.pop("publish") == "skipped"  # no P2P publisher configured here (see test_p2p.py)
+    assert set(st.values()) == {"done"}
+    assert all(s["duration_ms"] is not None for s in result["steps"] if s["id"] != "publish")
     assert result["decision"]["approved"] is True
 
     new_head = chain.get_head(repo.config["repo_id"])

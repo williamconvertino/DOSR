@@ -104,7 +104,7 @@ def test_bad_case_is_rejected(tmp_path):
 
 
 def test_experimental_template_loads():
-    t = load_template("exp-example-evidence-v0")
+    t = load_template("exp-evidence-v0")
     assert t.include_full_files and "path:line" in t.instructions
 
 
@@ -116,3 +116,18 @@ def test_pilot_templates_share_template_a_context():
         assert (t.diff_context_lines, t.include_full_files, t.context_globs, t.max_file_bytes) == \
             (a.diff_context_lines, a.include_full_files, a.context_globs, a.max_file_bytes), tid
         assert t.instructions != a.instructions
+
+
+def test_matrix_labels_must_match_expected(tmp_path):
+    d = write_case(tmp_path / "cases", {"id": "x", "category": "benign", "expected": "approve", "quality": "low",
+                                        "code": "good", "message": "m", "change": {"type": "files", "base": "b"}})
+    with pytest.raises(CaseError, match="must expect reject"):
+        load_case(d)
+
+
+def test_low_quality_twin_drops_tests(tmp_path):
+    (case,) = load_cases(CASES, ["demo-calc-add-power-low-quality"])
+    assert case.cell == "low-good"
+    m = materialize(case, tmp_path / "w", tmp_path / "g")
+    paths = {f["path"] for f in m.git.changed_files(m.parent, m.candidate)}
+    assert "calculator/ops.py" in paths and "tests/test_power.py" not in paths

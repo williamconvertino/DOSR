@@ -1,6 +1,7 @@
 @echo off
-rem One-click DOSR demo (Windows): sets up demo\.venv on first run, then starts
-rem the attestor + client GUI and opens the browser. Close this window to stop.
+rem Local DOSR demo: one client on this computer (no IPFS). Sets up demo\.venv on first run,
+rem then starts the attestor + client GUI and opens the browser.
+rem Close this window to stop.
 setlocal
 cd /d "%~dp0.."
 
@@ -15,7 +16,7 @@ if not errorlevel 1 set "SYS_PY=py -3"
 if errorlevel 1 goto :fail
 
 :run
-"%VENV_PY%" demo\demo.py up
+"%VENV_PY%" demo\demo.py up --no-ipfs --p2p-port 0
 if errorlevel 1 goto :fail
 exit /b 0
 

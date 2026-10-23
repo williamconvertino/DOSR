@@ -6,11 +6,17 @@ is no authentication, so do not expose it on a network interface.
 
 Submissions run in a background thread; the page polls /api/jobs/{id} to show
 live step progress, latency, and ETA.
+
+P2P (p2p.py, ipfs.py): repositories are published to IPFS (or a local store when no
+IPFS node runs) and imported on other devices from a share code. With `p2p_port`, a
+separate, minimal peer inbox (inbox.py) listens on the LAN so other devices can send
+share codes here; the GUI API itself never leaves 127.0.0.1.
 """
 
 import json
 import os
 import shutil
+import socket
 import threading
 import time
 import webbrowser
@@ -50,7 +56,10 @@ from ..pipeline import (
     model_choices,
     parse_model_choice,
 )
+from ..inbox import Inbox, Peers, announce_all, create_inbox_app, lan_ip, send_hello, serve_in_thread
+from ..ipfs import IpfsStore, LocalStore, P2PStore, StoreError
 from ..keys import KeyStore, KeyStoreError
+from ..p2p import P2PError, find_repo, import_share, load_state, publish
 from ..templates import (
     available_templates,
     check_text,
@@ -73,10 +82,18 @@ MAX_EDIT_BYTES = 512 * 1024
 
 
 class GuiState:
-    def __init__(self, workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file=None):
+    def __init__(self, workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file=None,
+                 ipfs_api=None, local_store=None, p2p_mode="auto", device=None):
         self.keys = KeyStore(env_file)
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self.p2p = None if p2p_mode == "off" else P2PStore(IpfsStore(ipfs_api), LocalStore(local_store),
+                                                            mode=p2p_mode)
+        p2p_dir = self.workspace / ".p2p"
+        self.inbox = Inbox(p2p_dir / "inbox.json")
+        self.peers = Peers(p2p_dir / "peers.json")
+        self.device = device or os.environ.get("DOSR_DEVICE_NAME") or socket.gethostname()
+        self.inbox_url: str | None = None  # set when the peer inbox is listening
         self.seeds_dir = Path(seeds_dir).resolve() if seeds_dir else None
         self.profiles_dir = Path(profiles_dir).resolve() if profiles_dir else None
         self.explicit_attestor_url = attestor_url
@@ -108,6 +125,35 @@ class GuiState:
         if path.parent != self.workspace or not DosrRepo.is_dosr_repo(path):
             raise HTTPException(404, f"no DOSR repository named {name!r} in the workspace")
         return DosrRepo(path)
+
+    def store(self) -> P2PStore:
+        if self.p2p is None:
+            raise HTTPException(400, "P2P is off (started with --p2p off)")
+        return self.p2p
+
+    def hello(self) -> dict:
+        """What other devices learn about this one (peer inbox /dosr/hello)."""
+        out = {"device": self.device, "inbox_url": self.inbox_url, "peer_id": None, "ipfs_addrs": []}
+        if self.p2p is not None and self.p2p.ipfs_up():
+            try:
+                info = self.p2p.ipfs.info()
+                out.update(peer_id=info["peer_id"],
+                           ipfs_addrs=[a if "/p2p/" in a else f"{a}/p2p/{info['peer_id']}"
+                                       for a in info["shareable_addresses"]][:20])
+            except StoreError:
+                pass
+        return out
+
+    def publish_and_announce(self, repo: DosrRepo) -> dict:
+        pub = publish(repo, self.chain, self.store(), self.profile, device=self.device)
+        me = self.hello()
+        pub["announced"] = announce_all(self.peers, {
+            "share": pub["share"], "repo_id": repo.config["repo_id"], "name": repo.name,
+            "canonical_head": pub["canonical_head"], "accepted_transitions": pub["accepted_transitions"],
+            "from_name": f"{self.profile.name} <{self.profile.email}>", "device": self.device,
+            "inbox_url": self.inbox_url, "ipfs_addrs": me["ipfs_addrs"],
+        })
+        return pub
 
     def seeds(self) -> list[dict]:
         if not self.seeds_dir or not self.seeds_dir.is_dir():
@@ -171,6 +217,22 @@ class CommitBody(BaseModel):
     message: str
 
 
+class ImportBody(BaseModel):
+    share: str
+    expect_head: str | None = None
+    inbox_id: str | None = None  # the inbox item this came from (its sender's IPFS addresses are dialed first)
+    timeout: float = 60
+    adopt: bool = False  # dev: on a conflict, adopt the shared history (p2p.import_share replace=True)
+
+
+class PeerBody(BaseModel):
+    url: str
+
+
+class ConnectBody(BaseModel):
+    addr: str
+
+
 class SubmitBody(BaseModel):
     message: str | None = None
     model: str | None = None
@@ -187,6 +249,8 @@ def create_app(state: GuiState) -> FastAPI:
     app = FastAPI(title="DOSR Client GUI", version=__version__)
 
     @app.exception_handler(ConfigError)
+    @app.exception_handler(P2PError)
+    @app.exception_handler(StoreError)
     @app.exception_handler(ValueError)
     @app.exception_handler(GitError)
     @app.exception_handler(ChainError)
@@ -225,6 +289,7 @@ def create_app(state: GuiState) -> FastAPI:
             "templates": available_templates(),
             "templates_dir": str(template_dirs()[0]),
             "steps": [{"id": i, "label": label} for i, label in STEPS],
+            "device": state.device,
             "bad_requests": [{"id": k, "description": v} for k, v in BAD_REQUESTS.items()],
             "model_catalog": {
                 "providers": [{"id": k, "label": v["label"]} for k, v in CATALOG.items()],
@@ -384,6 +449,11 @@ def create_app(state: GuiState) -> FastAPI:
             raise
         created["took_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         created["id"] = name
+        if state.p2p is not None and created.get("registration"):
+            try:  # best effort: makes the new repo importable right away
+                created["published"] = state.publish_and_announce(DosrRepo(path))
+            except Exception as e:
+                created["publish_error"] = str(e)
         return created
 
     @app.get("/api/repos/{name}")
@@ -489,7 +559,8 @@ def create_app(state: GuiState) -> FastAPI:
                 bad_request=body.bad_request or None,
                 force=body.force,
             )
-            sub = Submission(repo, state.profile, state.attestor(), state.chain, opts)
+            publisher = state.publish_and_announce if state.p2p is not None else None
+            sub = Submission(repo, state.profile, state.attestor(), state.chain, opts, publisher)
             state.jobs[sub.request_id] = sub
         threading.Thread(target=sub.run, name=f"submit-{sub.request_id}", daemon=True).start()
         return {"job_id": sub.request_id}
@@ -513,22 +584,116 @@ def create_app(state: GuiState) -> FastAPI:
     def chain():
         return {"state_path": str(state.chain.state_path), "repos": state.chain.list_repositories()}
 
+    # ---- P2P: publish / import over IPFS, peers, inbox
+
+    @app.get("/api/p2p")
+    def p2p_status():
+        out = {"enabled": state.p2p is not None, "device": state.device, "inbox_url": state.inbox_url,
+               "peers": state.peers.list(), "inbox_new": sum(1 for i in state.inbox.list() if i["status"] == "new")}
+        if state.p2p is not None:
+            out.update(state.p2p.status())
+            if out.get("ipfs"):
+                out["ipfs_addrs"] = state.hello()["ipfs_addrs"]
+        return out
+
+    @app.post("/api/repos/{name}/publish")
+    def publish_repo(name: str):
+        return state.publish_and_announce(state.repo(name))
+
+    @app.get("/api/repos/{name}/p2p")
+    def repo_p2p(name: str):
+        st = load_state(state.repo(name))
+        return {"published": st["published"][::-1], "imported": st["imported"][::-1],
+                "last": st["published"][-1] if st["published"] else None}
+
+    @app.post("/api/p2p/import")
+    def p2p_import(body: ImportBody):
+        store = state.store()
+        dialed = []
+        item = state.inbox.get(body.inbox_id) if body.inbox_id else None
+        if item and item.get("ipfs_addrs") and store.ipfs_up():
+            dialed = store.ipfs.connect(item["ipfs_addrs"][:6])
+        res = import_share(state.workspace, state.chain, store, body.share, expect_head=body.expect_head,
+                           timeout=body.timeout, replace=body.adopt)
+        res["dialed"] = dialed
+        if item:
+            state.inbox.set_status(item["id"], "pulled")
+        return res
+
+    @app.get("/api/p2p/inbox")
+    def p2p_inbox():
+        items = state.inbox.list()
+        for i in items:  # what pulling it would do here
+            local = find_repo(state.workspace, i["repo_id"])
+            i["local_repo"] = local.name if local else None
+            if local:
+                try:
+                    i["local_head"] = state.chain.get_head(i["repo_id"])
+                except ChainError:
+                    i["local_head"] = None
+        return {"items": items}
+
+    @app.post("/api/p2p/inbox/{item_id}/dismiss")
+    def p2p_dismiss(item_id: str):
+        if not state.inbox.set_status(item_id, "dismissed"):
+            raise HTTPException(404, "unknown inbox item")
+        return {"ok": True}
+
+    @app.post("/api/p2p/peers")
+    def add_peer(body: PeerBody):
+        """Introduce ourselves to another device's inbox (it adds us back) and dial its IPFS node."""
+        try:
+            hello = send_hello(body.url, state.hello())
+        except Exception as e:
+            raise HTTPException(400, f"could not reach a DOSR peer inbox at {body.url}: {e}. Check the address "
+                                     "(the other GUI shows it under P2P), that both are on the same network, and "
+                                     "that its firewall allows the port")
+        dialed = []
+        if hello.get("ipfs_addrs") and state.p2p is not None and state.p2p.ipfs_up():
+            dialed = state.p2p.ipfs.connect(hello["ipfs_addrs"][:6])
+        peer = state.peers.upsert(body.url, device=hello.get("device"), peer_id=hello.get("peer_id"),
+                                  ipfs_addrs=hello.get("ipfs_addrs"), last_seen=int(time.time()))
+        return {"peer": peer, "dialed": dialed}
+
+    @app.delete("/api/p2p/peers")
+    def remove_peer(url: str):
+        state.peers.remove(url)
+        return {"ok": True}
+
+    @app.post("/api/p2p/connect")
+    def p2p_connect(body: ConnectBody):
+        store = state.store()
+        if not store.ipfs_up():
+            raise HTTPException(400, "IPFS is not running on this device")
+        return {"results": store.ipfs.connect([body.addr.strip()])}
+
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 
 
 def serve(*, host="127.0.0.1", port=8765, workspace=".", seeds_dir=None, profiles_dir=None,
-          profile_path=None, attestor_url=None, chain_state=None, open_browser=True, env_file=None):
+          profile_path=None, attestor_url=None, chain_state=None, open_browser=True, env_file=None,
+          ipfs_api=None, local_store=None, p2p_mode="auto", p2p_port=None, p2p_host="0.0.0.0", device=None):
     import uvicorn
 
-    state = GuiState(workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file)
+    state = GuiState(workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file,
+                     ipfs_api=ipfs_api, local_store=local_store, p2p_mode=p2p_mode, device=device)
     app = create_app(state)
+    if p2p_port and state.p2p is not None:
+        serve_in_thread(create_inbox_app(state.inbox, state.peers, state.hello), p2p_host, p2p_port)
+        shown = lan_ip() if p2p_host in ("0.0.0.0", "::") else p2p_host
+        state.inbox_url = f"http://{shown}:{p2p_port}"
     url = f"http://{host}:{port}/"
     print(f"DOSR client GUI on {url}")
     print(f"  workspace : {state.workspace}")
     print(f"  attestor  : {state.attestor().base_url}")
     print(f"  chain     : {state.chain.state_path}")
     print(f"  API keys  : {state.keys.env_file or 'this session only (no --env-file)'}")
+    if state.p2p is not None:
+        st = state.p2p.status()
+        print(f"  P2P store : {'IPFS ' + st['ipfs_api'] if st['backend'] == 'ipfs' else 'local store ' + st['local_store'] + ' (IPFS not running)'}")
+    if state.inbox_url:
+        print(f"  peer inbox: {state.inbox_url}  (give this address to the other device)")
     if open_browser and not os.environ.get("DOSR_NO_BROWSER"):
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port, log_level="warning")

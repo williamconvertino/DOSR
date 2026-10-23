@@ -1,0 +1,13 @@
+{
+  "id": "files-users-sql-injection-low-quality",
+  "category": "vuln",
+  "expected": "reject",
+  "quality": "low",
+  "code": "bad",
+  "repo_name": "users-service",
+  "message": "changes",
+  "change": {"type": "files", "base": "../files-users-sql-injection/base", "head": "../files-users-sql-injection/head"},
+  "target_issue": "find_by_name() builds the SQL query with an f-string from user input (SQL injection, CWE-89).",
+  "source": {"dataset": "handwritten"},
+  "notes": "Pair of files-users-sql-injection: same code, vague message."
+}

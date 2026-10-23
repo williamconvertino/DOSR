@@ -5,19 +5,19 @@ The attestor (services/attestor/attestor/review.py + gitcheck.py) builds the pro
 and this module calls the very same functions, so `review_input_hash` here equals the
 one the attestor would sign for the same transition (tests/test_fidelity.py checks it).
 
-Templates: any id in dosr_protocol.pr_format.TEMPLATES, or an experimental template
-from a JSON file in experiments/templates/ (same fields as PRTemplate). Experimental
+Templates: any built-in id (dosr_protocol/templates/*.toml), or an experimental
+template in experiments/templates/<id>.toml, in the same file format. Experimental
 templates let us try prompt variants without touching the protocol package; a winner
 gets added to pr_format.py under a new id in a separate PR.
 """
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from dosr_git import pr_inputs
 from dosr_protocol.canonical import sha256_0x
 from dosr_protocol.decision import DECISION_V1, build_prompt
+from dosr_protocol.templates import TemplateError, load_template_file
 from dosr_protocol.pr_format import (
     TEMPLATES,
     PRFormatError,
@@ -51,19 +51,21 @@ class ReviewInput:
 
 
 def load_template(template_id: str, templates_dir: Path = TEMPLATES_DIR) -> PRTemplate:
+    """A built-in template by id, or experiments/templates/<id>.toml in the protocol's
+    template format (dosr_protocol/templates.py), so a winner can be embedded in a
+    policy as `review.template` unchanged."""
     if template_id in TEMPLATES:
         return TEMPLATES[template_id]
-    path = Path(templates_dir) / f"{template_id}.json"
+    path = Path(templates_dir) / f"{template_id}.toml"
     if not path.is_file():
-        raise PRFormatError(f"unknown template {template_id!r}: not in pr_format.TEMPLATES and no {path}")
-    data = json.loads(path.read_text("utf-8"))
-    if data.get("id") != template_id:
+        raise PRFormatError(f"unknown template {template_id!r}: not built in and no {path}")
+    try:
+        template = load_template_file(path)
+    except TemplateError as e:
+        raise PRFormatError(str(e))
+    if template.id != template_id:
         raise PRFormatError(f"{path}: id must be {template_id!r}")
-    if data["id"] in TEMPLATES:
-        raise PRFormatError(f"{path}: id collides with a protocol template")
-    data["context_globs"] = tuple(data.get("context_globs", ()))
-    data["checklist"] = tuple(data.get("checklist", ()))
-    return PRTemplate(**data)
+    return template
 
 
 def build_review_input(m: Materialized, template: PRTemplate, decision_schema: str = DECISION_V1,

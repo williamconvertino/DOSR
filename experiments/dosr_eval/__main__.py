@@ -1,4 +1,4 @@
-"""CLI: python -m dosr_eval {list,prompt,run,models,report,grade,figures,import-sevra,import-swebench} --help"""
+"""CLI: python -m dosr_eval {list,prompt,run,models,report,grade,spend,figures,paper,import-sevra,import-swebench} --help"""
 
 import argparse
 import sys
@@ -9,9 +9,18 @@ from .metrics import load_grades, load_rows, report, row_key, write_grade_sheet
 from .prompts import build_review_input, load_template
 from .reviewers import ModelSpec, api_key_env, attestor_reviewers, find_key, load_dotenv
 from .runner import EXPERIMENTS, RunConfig, build_inputs, estimate_cost, load_pricing, run
+from .spend import spend_report, summarize_spend
 
 DEFAULT_TEMPLATE = "security-sensitive-review-v2"
 DEFAULT_MODEL = "mock/deterministic-reviewer-v1@1"
+DEFAULT_PRICING = EXPERIMENTS / "pricing.json"
+
+
+def _pricing(path: Path | None) -> dict:
+    """--pricing, else experiments/pricing.json if present."""
+    if path is None and DEFAULT_PRICING.is_file():
+        path = DEFAULT_PRICING
+    return load_pricing(path)
 
 
 def cmd_list(args) -> int:
@@ -53,7 +62,7 @@ def cmd_run(args) -> int:
         reps=args.reps,
         out_dir=args.out,
         label=args.label,
-        pricing=load_pricing(args.pricing),
+        pricing=_pricing(args.pricing),
         providers_file=args.providers_file,
         budget=args.budget,
     )
@@ -62,11 +71,12 @@ def cmd_run(args) -> int:
     est = sum(ri.metrics["total"]["est_tokens"] for ri in inputs.values()) * len(cfg.models) * cfg.reps
     print(f"{len(cfg.cases)} case(s) × {len(cfg.templates)} template(s) × {len(cfg.models)} model(s) × "
           f"{cfg.reps} rep(s) = {calls} call(s), ~{est:,} prompt tokens (chars/4 estimate)")
-    for name, cost in estimate_cost(inputs, cfg.models, cfg.reps, cfg.pricing).items():
-        price = cfg.pricing.get(name, {})
-        shown = "free" if cost == 0 else (f"≤ ~{cost:.4f} {price.get('currency', '')}".rstrip()
-                                          if cost is not None else "unknown (no prices in --pricing)")
-        print(f"  {name}: estimated cost {shown}")
+    worst = estimate_cost(cfg, inputs)
+    if any(m.paid for m in cfg.models):
+        print("worst-case cost: " + (f"{worst:.4f} (prompt estimate ×1.5 + full 1024-token answers)"
+                                     if worst is not None else "unknown (add the model to pricing.json)"))
+    if cfg.budget is not None and worst is not None and worst > cfg.budget:
+        print(f"  note: worst case exceeds --budget {cfg.budget}; the run stops before going over it")
     for (cid, tid), ri in inputs.items():
         if ri.limit_problems:
             print(f"  ⚠ {cid} · {tid}: the attestor would refuse before the model: {'; '.join(ri.limit_problems)}")
@@ -128,7 +138,7 @@ def _load(results: list[Path], grades: list[Path] | None, exclude: list[str] | N
     return _without(rows, exclude)
 
 
-def cmd_figures(args) -> int:
+def cmd_paper(args) -> int:
     from .paper import write_outputs
 
     rows = _load(args.results, args.grades, args.exclude)
@@ -147,6 +157,23 @@ def _without(rows: list[dict], exclude: list[str] | None) -> list[dict]:
             raise CaseError(f"--exclude: no such case in the results: {', '.join(sorted(unknown))}")
         print(f"excluding {len(exclude)} case(s): {', '.join(exclude)}", file=sys.stderr)
     return [r for r in rows if r["case"] not in set(exclude or ())]
+
+
+def cmd_spend(args) -> int:
+    pricing = _pricing(args.pricing)
+    print(spend_report(summarize_spend(args.results_dir, pricing, args.since), pricing))
+    return 0
+
+
+def cmd_figures(args) -> int:
+    from .figures import write_all
+
+    rows = [row for path in args.results for row in load_rows(path)]
+    out = args.out or EXPERIMENTS / "reports" / "figures" / args.results[0].stem
+    currency = {(_pricing(args.pricing).get(r["model"]) or {}).get("currency", "") for r in rows} - {""}
+    for path in write_all(rows, out, currency.pop() if len(currency) == 1 else ""):
+        print(path)
+    return 0
 
 
 def cmd_report(args) -> int:
@@ -176,13 +203,14 @@ def main(argv=None) -> int:
     p.add_argument("--reps", type=int, default=1, help="calls per case/template/model")
     p.add_argument("--out", type=Path, default=EXPERIMENTS / "results")
     p.add_argument("--label", default="", help="suffix for the results file name")
-    p.add_argument("--pricing", type=Path, help="JSON of per-model token prices (see pricing.example.json)")
+    p.add_argument("--pricing", type=Path,
+                   help="per-model token prices (default: pricing.json; see pricing.example.json)")
     p.add_argument("--providers-file", type=Path, help="extra OpenAI-compatible providers (attestor format)")
-    p.add_argument("--dry-run", action="store_true", help="build prompts and estimate size; call nothing")
+    p.add_argument("--dry-run", action="store_true", help="build prompts and estimate size/cost; call nothing")
     p.add_argument("--paid", action="store_true",
                    help="allow calls to paid models (anything but mock/); without it only the plan is printed")
     p.add_argument("--budget", type=float,
-                   help="stop before the next call once this much is spent (needs --pricing for paid models)")
+                   help="stop before a call that could take the spend over this (pricing currency)")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("import-sevra", help="write fix / revert / misleading-revert cases for SEVRA vulns")
@@ -222,12 +250,24 @@ def main(argv=None) -> int:
     p.add_argument("--force", action="store_true", help="overwrite an existing grade sheet")
     p.set_defaults(fn=cmd_grade)
 
-    p = sub.add_parser("figures", help="LaTeX tables and PDF/PNG figures for the paper")
+    p = sub.add_parser("paper", help="graded LaTeX tables and PDF/PNG figures by case group (A/B/C, diagnosis, --exclude)")
     p.add_argument("results", type=Path, nargs="+", help="one or more results JSONL files (combined)")
     p.add_argument("--grades", type=Path, action="append", help="graded CSV from `grade` (repeatable, one per run)")
     p.add_argument("--exclude", action="append", help="case id to leave out, e.g. one with a wrong label (repeatable)")
     p.add_argument("--out", type=Path, help="default: reports/<run id>/")
     p.add_argument("--currency", default="", help="label for cost columns, e.g. USD")
+    p.set_defaults(fn=cmd_paper)
+
+    p = sub.add_parser("spend", help="API spend across finished runs")
+    p.add_argument("--results-dir", type=Path, default=EXPERIMENTS / "results")
+    p.add_argument("--since", help="only runs on or after this date (YYYY-MM-DD)")
+    p.add_argument("--pricing", type=Path, help="default: pricing.json")
+    p.set_defaults(fn=cmd_spend)
+
+    p = sub.add_parser("figures", help="paper tables (LaTeX + Markdown) and charts (PDF + PNG)")
+    p.add_argument("results", type=Path, nargs="+", help="results JSONL file(s)")
+    p.add_argument("--out", type=Path, help="output directory (default: reports/figures/<first run>)")
+    p.add_argument("--pricing", type=Path, help="default: pricing.json (for the currency label)")
     p.set_defaults(fn=cmd_figures)
 
     args = ap.parse_args(argv)

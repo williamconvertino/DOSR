@@ -80,9 +80,9 @@ def test_budget_stops_before_the_next_call(tmp_path, monkeypatch):
                     cache_dir=tmp_path / "g", budget=1.5,
                     pricing={spec: {"input_per_mtok": 1.0, "output_per_mtok": 1.0}})
     path = run(cfg, backends={spec: b}, log=lambda *_: None)
-    assert len(calls) == 2 and len(load_rows(path)) == 2  # 1.0 spent, then 2.0 >= 1.5: stop
+    assert len(calls) == 2 and len(load_rows(path)) == 2  # 1.0 spent; then 2.0 + next call > 1.5: stop
     meta = json.loads(path.with_suffix("").with_suffix(".meta.json").read_text())
-    assert meta["stopped"] == "budget"
+    assert meta["stopped"].startswith("budget 1.5 reached")
 
 
 def test_budget_needs_prices(tmp_path, monkeypatch):
@@ -91,5 +91,5 @@ def test_budget_needs_prices(tmp_path, monkeypatch):
     cfg = RunConfig(cases=load_cases(CASES, ["demo-calc-add-power"]), templates=["security-sensitive-review-v2"],
                     models=[ModelSpec.parse(spec)], out_dir=tmp_path / "out", work_dir=tmp_path / "w",
                     cache_dir=tmp_path / "g", budget=1.0)
-    with pytest.raises(SystemExit, match="prices"):
+    with pytest.raises(SystemExit, match="needs a price"):
         run(cfg, backends={spec: b}, log=lambda *_: None)

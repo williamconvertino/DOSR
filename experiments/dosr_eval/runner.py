@@ -19,6 +19,7 @@ from dosr_protocol.decision import DECISION_V1, DecisionError, parse_decision
 from .cases import Case, materialize
 from .prompts import ReviewInput, build_review_input, load_template
 from .reviewers import Backend, ModelSpec, api_key_env, attestor_reviewers
+from .spend import cost_of, price_of, worst_case_call
 
 EXPERIMENTS = Path(__file__).resolve().parents[1]
 
@@ -35,7 +36,7 @@ class RunConfig:
     label: str = ""
     pricing: dict = field(default_factory=dict)
     providers_file: Path | None = None
-    budget: float | None = None  # stop before the next call once this much (pricing currency) is spent
+    budget: float | None = None  # stop before spending more than this (pricing currency)
 
 
 def load_pricing(path: Path | None) -> dict:
@@ -45,32 +46,17 @@ def load_pricing(path: Path | None) -> dict:
     return json.loads(Path(path).read_text("utf-8"))
 
 
-def cost_of(usage: dict | None, price: dict | None) -> float | None:
-    if not usage or not price:
-        return None
-    pin, pout = price.get("input_per_mtok"), price.get("output_per_mtok")
-    if pin is None or pout is None:
-        return None
-    return (usage.get("prompt_tokens", 0) * pin + usage.get("completion_tokens", 0) * pout) / 1_000_000
-
-
-# Output tokens assumed per call when estimating cost before a run: the attestor's
-# max_tokens. Reasoning models may use more (their limit is raised to 8192).
-EST_OUTPUT_TOKENS = 1024
-
-
-def estimate_cost(inputs: dict, models: list[ModelSpec], reps: int, pricing: dict) -> dict[str, float | None]:
-    """Upper-bound-ish cost per model: estimated prompt tokens + EST_OUTPUT_TOKENS per call."""
-    out = {}
-    for spec in models:
-        name = str(spec)
-        if not spec.paid:
-            out[name] = 0.0
+def estimate_cost(cfg: RunConfig, inputs: dict) -> float | None:
+    """Worst-case cost of the whole run; None if a paid model has no price."""
+    total = 0.0
+    for spec in cfg.models:
+        if spec.provider == "mock":
             continue
-        usage = {"prompt_tokens": sum(ri.metrics["total"]["est_tokens"] for ri in inputs.values()) * reps,
-                 "completion_tokens": EST_OUTPUT_TOKENS * len(inputs) * reps}
-        out[name] = cost_of(usage, pricing.get(name))
-    return out
+        price = price_of(cfg.pricing, str(spec))
+        if price is None:
+            return None
+        total += sum(worst_case_call(ri.metrics["total"]["est_tokens"], price) for ri in inputs.values()) * cfg.reps
+    return total
 
 
 def _git_head() -> str | None:
@@ -116,8 +102,8 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         if b.needs_key and not b.key:
             raise SystemExit(f"{name} needs an API key: set {api_key_env(b.spec.provider)} "
                              f"(environment or the repo's .env)")
-        if cfg.budget is not None and b.spec.paid and cost_of({"prompt_tokens": 1}, cfg.pricing.get(name)) is None:
-            raise SystemExit(f"--budget needs prices for {name} in the pricing file")
+        if cfg.budget is not None and b.spec.paid and price_of(cfg.pricing, name) is None:
+            raise SystemExit(f"--budget needs a price for {name} in the pricing file")
 
     started = datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ") + (f"-{cfg.label}" if cfg.label else "")
@@ -137,42 +123,55 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
     meta_path = cfg.out_dir / f"{run_id}.meta.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    jobs = [(case, tid, name, backend, rep) for case in cfg.cases for tid in cfg.templates
-            for name, backend in backends.items() for rep in range(cfg.reps)]
-    spent = 0.0
+    total = len(cfg.cases) * len(cfg.templates) * len(backends) * cfg.reps
+    done, spent = 0, 0.0
+
+    def stop(reason: str) -> Path:
+        meta.update(stopped=reason, calls_made=done, spent=round(spent, 6))
+        (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        log(f"stopped: {reason}")
+        return rows_path
+
     with rows_path.open("w", encoding="utf-8") as f:
-        for done, (case, tid, name, backend, rep) in enumerate(jobs, 1):
-            if cfg.budget is not None and spent >= cfg.budget:
-                log(f"budget {cfg.budget} reached (spent {spent:.4f}); stopping before call {done}/{len(jobs)}")
-                meta.update(stopped="budget", calls_made=done - 1)
-                meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-                break
-            ri = inputs[(case.id, tid)]
-            result = review_once(backend, ri.prompt)
-            cost = cost_of(result.get("usage"), cfg.pricing.get(name))
-            spent += cost or 0.0
-            row = {
-                "run_id": run_id,
-                "case": case.id,
-                "dataset": case.source.get("dataset", case.change["type"]),
-                "category": case.category,
-                "expected": case.expected,
-                "target_issue": case.target_issue,  # for grading only; never in the prompt
-                "template": tid,
-                "model": name,
-                "rep": rep,
-                "review_input_hash": ri.review_input_hash,
-                "pr_hash": ri.pr_hash,
-                "prompt_est_tokens": ri.metrics["total"]["est_tokens"],
-                "limit_problems": ri.limit_problems,
-                **result,
-                "cost": cost,
-            }
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            f.flush()
-            verdict = "ERROR" if "error" in result else (
-                "parse-fail" if result.get("parse_error") else
-                ("approve" if result["approved"] else "reject"))
-            log(f"[{done}/{len(jobs)}] {case.id} · {tid} · {name} · rep {rep}: {verdict} "
-                f"(expected {case.expected})" + (f" · spent {spent:.4f}" if cfg.pricing else ""))
+        for case in cfg.cases:
+            for tid in cfg.templates:
+                ri = inputs[(case.id, tid)]
+                for name, backend in backends.items():
+                    price = price_of(cfg.pricing, name)
+                    for rep in range(cfg.reps):
+                        if cfg.budget is not None and price is not None:
+                            next_max = worst_case_call(ri.metrics["total"]["est_tokens"], price)
+                            if spent + next_max > cfg.budget:
+                                return stop(f"budget {cfg.budget} reached ({spent:.4f} spent, next call "
+                                            f"could cost up to {next_max:.4f})")
+                        result = review_once(backend, ri.prompt)
+                        row = {
+                            "run_id": run_id,
+                            "case": case.id,
+                            "dataset": case.source.get("dataset", case.change["type"]),
+                            "category": case.category,
+                            "cell": case.cell,
+                            "expected": case.expected,
+                            "target_issue": case.target_issue,  # for grading only; never in the prompt
+                            "template": tid,
+                            "model": name,
+                            "rep": rep,
+                            "review_input_hash": ri.review_input_hash,
+                            "pr_hash": ri.pr_hash,
+                            "prompt_est_tokens": ri.metrics["total"]["est_tokens"],
+                            "limit_problems": ri.limit_problems,
+                            **result,
+                            "cost": cost_of(result.get("usage"), price),
+                        }
+                        spent += row["cost"] or 0.0
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        f.flush()
+                        done += 1
+                        verdict = "ERROR" if "error" in result else (
+                            "parse-fail" if result.get("parse_error") else
+                            ("approve" if result["approved"] else "reject"))
+                        log(f"[{done}/{total}] {case.id} · {tid} · {name} · rep {rep}: {verdict} "
+                            f"(expected {case.expected})" + (f" · spent {spent:.4f}" if price else ""))
+    meta.update(calls_made=done, spent=round(spent, 6))
+    (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return rows_path

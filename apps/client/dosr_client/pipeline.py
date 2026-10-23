@@ -1,5 +1,5 @@
 """PR submission pipeline: working tree -> commit -> bundle -> PR -> prompt -> local
-validation -> attestor -> decision -> chain.
+validation -> attestor -> decision -> chain -> IPFS (share the new canonical HEAD).
 
 Each stage is a named step with status, latency, detail text, and error. The CLI
 and GUI both observe the same `Submission` object (via listeners or snapshots),
@@ -61,6 +61,7 @@ STEPS = [
     ("await", "Wait for attestor decision"),
     ("verify", "Verify attestation"),
     ("register", "Register on chain (mock)"),
+    ("publish", "Publish to IPFS"),
 ]
 
 # review_input_hash / response_hash when the attestor did not call the model.
@@ -108,6 +109,7 @@ class SubmitOptions:
     bundle_mode: str | None = None  # "full" | "thin"; defaults to the profile's
     bad_request: str | None = None  # demo only: one of BAD_REQUESTS
     force: bool = False  # send even if local validation fails (simulates a modified client)
+    publish: bool = True  # after an accepted transition, publish the new HEAD (needs a publisher)
 
 
 # Demo-only ways to tamper with a request after it is built, to show both lines of
@@ -251,8 +253,10 @@ def fmt_bytes(n: int | None) -> str:
 
 class Submission:
     def __init__(self, repo: DosrRepo, profile: ClientProfile, attestor: AttestorClient,
-                 chain: MockChain, options: SubmitOptions | None = None):
+                 chain: MockChain, options: SubmitOptions | None = None, publisher=None):
         self.repo = repo
+        # publisher(repo) -> dict (share code etc.; see p2p.publish). None: not configured.
+        self.publisher = publisher
         self.profile = profile
         self.attestor = attestor
         self.chain = chain
@@ -365,6 +369,7 @@ class Submission:
                     "dry_run": self.options.dry_run,
                     "bad_request": self.options.bad_request,
                     "force": self.options.force,
+                    "publish": self.options.publish,
                 },
             }
 
@@ -732,7 +737,25 @@ class Submission:
                 self.info["chain_event"] = event
                 s.detail = f"canonical HEAD → {event['candidate_git_oid'][:17]}… (block {event['block']})"
         except Exception:
-            pass  # recorded on the step; the review decision itself still stands
+            self._skip_rest("not run (chain registration failed)")
+            return  # recorded on the step; the review decision itself still stands
+
+        # 13. publish -----------------------------------------------------------
+        if not self.publisher or not opts.publish:
+            self._skip_rest("P2P publishing off" if self.publisher else "P2P not configured")
+            return
+        try:
+            with self._run_step("publish") as s:
+                pub = self.publisher(self.repo)
+                self.info["published"] = pub
+                where = "IPFS" if pub.get("backend") == "ipfs" else "local store (IPFS not running)"
+                s.detail = f"share code {pub['share']} · {where}"
+                sent = pub.get("announced") or []
+                if sent:
+                    ok = sum(1 for a in sent if a["ok"])
+                    s.detail += f" · announced to {ok}/{len(sent)} peer(s)"
+        except Exception:
+            pass  # recorded on the step; publishing can be retried from the Share tab
 
     def _tamper(self, request: dict, policy: dict, policy_bytes: bytes, bundle_bytes: bytes, git,
                 parent: str, candidate: str, fmt: str) -> tuple[dict, bytes, bytes]:
@@ -781,8 +804,8 @@ class Submission:
 
 
 def submit(repo: DosrRepo, profile: ClientProfile, attestor: AttestorClient, chain: MockChain,
-           options: SubmitOptions | None = None, listener=None) -> Submission:
-    sub = Submission(repo, profile, attestor, chain, options)
+           options: SubmitOptions | None = None, listener=None, publisher=None) -> Submission:
+    sub = Submission(repo, profile, attestor, chain, options, publisher)
     if listener:
         sub.add_listener(listener)
     sub.run()

@@ -33,6 +33,10 @@ DEMO_PROJECTS = ROOT / "demo" / "projects"
 CATEGORIES = ("benign", "bug", "vuln", "injection", "deceptive")
 EXPECTED = ("approve", "reject")
 CHANGE_TYPES = ("files", "demo", "git", "patch")
+# Optional 2x2 labels (paper matrix): how well the PR is presented x whether the code
+# is right. Policy: only a high-quality PR with good code is accepted.
+QUALITIES = ("high", "low")
+CODES = ("good", "bad")
 
 _IDENT = {
     "GIT_AUTHOR_NAME": "DOSR Eval",
@@ -60,6 +64,13 @@ class Case:
     target_issue: str | None = None  # withheld from the model; for diagnosis grading
     source: dict = field(default_factory=dict)
     notes: str = ""
+    quality: str | None = None  # "high" | "low": description, tests, clarity
+    code: str | None = None  # "good" | "bad": correct and safe, or not
+
+    @property
+    def cell(self) -> str | None:
+        """Matrix cell, e.g. "high-good"; None unless both labels are set."""
+        return f"{self.quality}-{self.code}" if self.quality and self.code else None
 
 
 @dataclass
@@ -86,6 +97,15 @@ def load_case(case_dir: Path) -> Case:
         raise CaseError(f"{path}: expected must be approve or reject")
     if data["change"].get("type") not in CHANGE_TYPES:
         raise CaseError(f"{path}: change.type must be one of {', '.join(CHANGE_TYPES)}")
+    quality, code = data.get("quality"), data.get("code")
+    if quality is not None and quality not in QUALITIES:
+        raise CaseError(f"{path}: quality must be high or low")
+    if code is not None and code not in CODES:
+        raise CaseError(f"{path}: code must be good or bad")
+    if quality and code:
+        implied = "approve" if (quality, code) == ("high", "good") else "reject"
+        if data["expected"] != implied:
+            raise CaseError(f"{path}: a {quality}-quality PR with {code} code must expect {implied}")
     return Case(
         id=data["id"],
         category=data["category"],
@@ -97,6 +117,8 @@ def load_case(case_dir: Path) -> Case:
         target_issue=data.get("target_issue"),
         source=data.get("source", {}),
         notes=data.get("notes", ""),
+        quality=quality,
+        code=code,
     )
 
 
@@ -236,7 +258,7 @@ def _patch_source(case: Case, work: Path, cache: Path) -> Materialized:
     # Apply to a throwaway index built from base's tree: no checkout needed, and the
     # partial clone fetches only the blobs the patch touches.
     work.mkdir(parents=True, exist_ok=True)
-    index = work / f"{case.id}.index"
+    index = (work / f"{case.id}.index").resolve()  # git resolves a relative GIT_INDEX_FILE against the repo
     index.unlink(missing_ok=True)
     try:
         _git(repo, "read-tree", base, index=index)
