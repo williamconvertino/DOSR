@@ -11,7 +11,7 @@ def test_shipped_cases_load_and_build(tmp_path):
     assert cases
     template = get_template("security-sensitive-review-v2")
     for case in cases:
-        if case.change["type"] == "git":
+        if case.change["type"] in ("git", "patch"):
             continue  # needs the network
         ri = build_review_input(materialize(case, tmp_path / "w", tmp_path / "g"), template)
         assert ri.prompt and not ri.limit_problems, case.id
@@ -20,7 +20,7 @@ def test_shipped_cases_load_and_build(tmp_path):
 def test_target_issue_is_withheld_from_the_prompt(tmp_path):
     template = get_template("security-sensitive-review-v2")
     for case in load_cases(CASES):
-        if case.target_issue and case.change["type"] != "git":
+        if case.target_issue and case.change["type"] not in ("git", "patch"):
             ri = build_review_input(materialize(case, tmp_path / "w", tmp_path / "g"), template)
             assert case.target_issue not in ri.prompt
 
@@ -104,5 +104,30 @@ def test_bad_case_is_rejected(tmp_path):
 
 
 def test_experimental_template_loads():
-    t = load_template("exp-example-evidence-v0")
+    t = load_template("exp-evidence-v0")
     assert t.include_full_files and "path:line" in t.instructions
+
+
+def test_pilot_templates_share_template_a_context():
+    """B and C differ from A only in their instructions, so the comparison isolates them."""
+    a = load_template("security-sensitive-review-v2")
+    for tid in ("exp-evidence-v1", "exp-blocking-only-v1"):
+        t = load_template(tid)
+        assert (t.diff_context_lines, t.include_full_files, t.context_globs, t.max_file_bytes) == \
+            (a.diff_context_lines, a.include_full_files, a.context_globs, a.max_file_bytes), tid
+        assert t.instructions != a.instructions
+
+
+def test_matrix_labels_must_match_expected(tmp_path):
+    d = write_case(tmp_path / "cases", {"id": "x", "category": "benign", "expected": "approve", "quality": "low",
+                                        "code": "good", "message": "m", "change": {"type": "files", "base": "b"}})
+    with pytest.raises(CaseError, match="must expect reject"):
+        load_case(d)
+
+
+def test_low_quality_twin_drops_tests(tmp_path):
+    (case,) = load_cases(CASES, ["demo-calc-add-power-low-quality"])
+    assert case.cell == "low-good"
+    m = materialize(case, tmp_path / "w", tmp_path / "g")
+    paths = {f["path"] for f in m.git.changed_files(m.parent, m.candidate)}
+    assert "calculator/ops.py" in paths and "tests/test_power.py" not in paths

@@ -1,0 +1,26 @@
+{
+  "id": "plan-sevra-cachet-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "quality": "high",
+  "code": "bad",
+  "repo_name": "Cachet",
+  "message": "Revert \"Ensure only allowed searchable columns are used in DB Query\"\n\nThis reverts commit 27bca8280419966ba80c6fa283d985ddffa84bb6.",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/fiveai/Cachet.git",
+    "base": "8c1a2c27d4a46777a78bceefa7f3fee297ebe7be",
+    "head": "27bca8280419966ba80c6fa283d985ddffa84bb6",
+    "reverse": true
+  },
+  "target_issue": "Lets request-supplied column names reach the DB query in SearchableTrait again, enabling unauthenticated SQL injection through the API (CVE-2021-39165).",
+  "source": {
+    "dataset": "SEVRA-style pair (fix from the GitHub advisory)",
+    "advisory": "https://github.com/advisories/GHSA-79mg-4w23-4fqc",
+    "cve": "CVE-2021-39165",
+    "cwe": "CWE-89",
+    "fix_commit": "https://github.com/fiveai/Cachet/commit/27bca8280419966ba80c6fa283d985ddffa84bb6",
+    "original_message": "Ensure only allowed searchable columns are used in DB Query"
+  },
+  "notes": "Reversal of the fix, honestly labeled as a revert (constructed, not a SEVRA record)."
+}

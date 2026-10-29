@@ -1,5 +1,7 @@
 {
-  "_comment": "Copy to pricing.json (git-ignored) and fill in current prices from the provider's pricing page. Prices are per million tokens; cost columns stay empty for models not listed here.",
+  "_comment": "Copy to pricing.json (git-ignored). Prices per million tokens; keys must match the --model spec exactly. Cost columns stay empty, and --budget refuses to run, for paid models not listed here. GLM-4.6: Z.ai list price (docs.z.ai/guides/overview/pricing, checked 2026-10-23); the attestor calls open.bigmodel.cn, which bills in CNY and may differ, so confirm on your account's billing page. GLM-4-Plus is not on Z.ai's list: fill it in from bigmodel.cn before using --budget with it. OpenAI/Anthropic: fill in from each provider's pricing page.",
+  "zhipu/glm-4.6@api-v4": {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "currency": "USD"},
   "zhipu/glm-4-plus@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"},
-  "zhipu/glm-4.6@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"}
+  "openai/gpt-5@2025-08-07": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"},
+  "anthropic/<model>@latest": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"}
 }

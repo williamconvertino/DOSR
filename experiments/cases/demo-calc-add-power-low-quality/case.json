@@ -1,0 +1,13 @@
+{
+  "id": "demo-calc-add-power-low-quality",
+  "category": "benign",
+  "expected": "reject",
+  "quality": "low",
+  "code": "good",
+  "repo_name": "calculator-py",
+  "message": "stuff",
+  "change": {"type": "demo", "project": "calculator-py", "change": "01-add-power", "delete": ["tests/test_power.py"]},
+  "target_issue": "Correct code, but the commit message says nothing and the new functions have no tests.",
+  "source": {"dataset": "dosr-demo", "ref": "calculator-py/01-add-power, tests dropped, vague message"},
+  "notes": "Pair of demo-calc-add-power: same functions, low-quality presentation."
+}
