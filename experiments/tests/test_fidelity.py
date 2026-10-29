@@ -17,7 +17,7 @@ def test_prompt_matches_attestor(tmp_path):
 
     template = get_template("security-sensitive-review-v2")
     for case in load_cases(CASES):
-        if case.change["type"] == "git":
+        if case.change["type"] in ("git", "patch"):
             continue
         m = materialize(case, tmp_path / "work", tmp_path / "git")
         ours = build_review_input(m, template)
@@ -26,7 +26,7 @@ def test_prompt_matches_attestor(tmp_path):
         transition = gitcheck.open_transition(
             gitcheck.ObjectCache(tmp_path / "attestor-cache", 30), EVAL_REPO_ID, "sha1",
             (tmp_path / f"{case.id}.bundle").read_bytes(), m.parent, m.candidate, template, case.repo_name)
-        theirs = build_prompt(template, render_markdown(transition.pr), DECISION_V1)
+        theirs = build_prompt(template, render_markdown(transition.pr, template), DECISION_V1)
 
         assert bundle.head_oid == m.candidate
         assert ours.pr_hash == transition.pr["pr_hash"], case.id

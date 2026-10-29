@@ -102,7 +102,7 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         if b.needs_key and not b.key:
             raise SystemExit(f"{name} needs an API key: set {api_key_env(b.spec.provider)} "
                              f"(environment or the repo's .env)")
-        if cfg.budget is not None and b.needs_key and price_of(cfg.pricing, name) is None:
+        if cfg.budget is not None and b.spec.paid and price_of(cfg.pricing, name) is None:
             raise SystemExit(f"--budget needs a price for {name} in the pricing file")
 
     started = datetime.now(timezone.utc)
@@ -120,7 +120,8 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         "decision_schema": DECISION_V1,
         "budget": cfg.budget,
     }
-    (cfg.out_dir / f"{run_id}.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta_path = cfg.out_dir / f"{run_id}.meta.json"
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     total = len(cfg.cases) * len(cfg.templates) * len(backends) * cfg.reps
     done, spent = 0, 0.0
@@ -147,9 +148,11 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
                         row = {
                             "run_id": run_id,
                             "case": case.id,
+                            "dataset": case.source.get("dataset", case.change["type"]),
                             "category": case.category,
                             "cell": case.cell,
                             "expected": case.expected,
+                            "target_issue": case.target_issue,  # for grading only; never in the prompt
                             "template": tid,
                             "model": name,
                             "rep": rep,

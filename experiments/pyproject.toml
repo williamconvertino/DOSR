@@ -10,8 +10,8 @@ requires-python = ">=3.10"
 dependencies = ["dosr-protocol", "dosr-git-storage", "httpx"]
 
 [project.optional-dependencies]
-figures = ["matplotlib>=3.7"]
-dev = ["pytest>=8", "matplotlib>=3.7"]
+dev = ["pytest>=8", "matplotlib>=3.8"]
+figures = ["matplotlib>=3.8"]
 
 [tool.setuptools.packages.find]
 include = ["dosr_eval*"]
