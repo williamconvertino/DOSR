@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-libevent-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "libevent",
+  "message": "Update evutil.c",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/libevent/libevent.git",
+    "base": "49bd79047bc9aca3ca43fb79eac3901e7805c0df",
+    "head": "329acc18a0768c21ba22522f01a5c7f46cacc4d5"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "CVE-2016-10196",
+    "advisory": "https://github.com/advisories/GHSA-c3jf-437c-9298",
+    "fix_commit": "https://github.com/libevent/libevent/commit/329acc18a0768c21ba22522f01a5c7f46cacc4d5"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

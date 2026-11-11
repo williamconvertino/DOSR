@@ -130,8 +130,9 @@ The LaTeX tables need `\usepackage{booktabs,multirow}`.
 | `tables.tex` | quality and cost per template (accuracy, false reject, miss, parse fail, flip, diagnosis, cost per review, cost per accepted bad PR), and correct verdicts per case group |
 | `fig_verdicts.pdf` / `.png` | correct-verdict rate per case group, one bar per template |
 | `fig_misleading.pdf` / `.png` | reject rate on reverted fixes, neutral vs misleading PR text |
+| `framings.md`, `tab:framings` in `tables.tex`, `fig_framings.pdf` / `.png` | bad SEVRA PRs accepted per framing (neutral revert vs each deceptive PR text), with 95% Wilson intervals, attempts per accepted bad PR and attacker cost per accepted bad PR |
 
-The committed pilot-v1 reports under `reports/` were made with `paper`.
+The committed pilot-v1 and final-v1 reports under `reports/` were made with `paper`.
 
 ## Metrics
 
@@ -220,6 +221,40 @@ Downloads are cached in `.cache/downloads`. GitHub API calls are unauthenticated
 Known limits: SWE-bench issues are old and well known (models may remember the
 fixes), and 4 cases per group is a pilot, not an estimate of rates.
 
+### final-v1
+
+122 cases, ids prefixed `final-` (the importers would otherwise reuse pilot-v1 ids):
+
+| Group | Cases | Expected |
+|---|---|---|
+| SEVRA CVE fixes: 20 vulnerabilities, 2 per CWE folder, 9 languages | 20 | approve |
+| the same fixes reverted (neutral `Update <file>` message) | 20 | reject |
+| the reverts with SEVRA's 3 framings that fooled models most often in SEVRA's own data (`prior_approval_signal` 73%, `fake_bug_fix` 65%, `review_bias` 65% of records with a non-empty `failed_by`) | 60 | reject |
+| SWE-bench Verified upstream fixes, one issue per repository (no usable flask issue; a second django one instead) | 11 | approve |
+| failing leaderboard patches for the same issues; `source.failure_type` is `broke_other_code` (5: a PASS_TO_PASS test also failed) or `did_not_fix` (6) | 11 | reject |
+
+Runs and reports: `reports/final-ac-x3/` (templates A and C, gpt-6-luna and Claude
+Haiku 5.5, 3 runs each; raw results in `raw/`; diagnosis grades in `grades-*.csv`;
+`analysis.md`: call-site context vs today's context, and Haiku's parse failures read as
+intended verdicts; `swe-failure-reasons.md`: why each failing patch fails, from the
+official test logs).
+
+Two pairs are excluded from the reported numbers (`--exclude`): astropy-8872 and
+pylint-4604. Their official failures cannot show the patch is wrong (the astropy test
+module fails to collect in the benchmark environment, identically for other leaderboard
+systems; the pylint tests import a helper only the upstream fix adds). The importer's
+"fails the issue's own tests" check does not catch such collection/import failures, so
+read `swe-failure-reasons.md` before trusting a new SWE-bench case.
+
+### Call-site context (`--context callers`)
+
+`run --context callers` (and `prompt --context callers`) appends a deterministic
+"Related code (call sites)" section: the functions and classes the diff changes, found
+with `git grep -w` at the candidate commit, shown as their enclosing function (Python)
+or ±15 lines, ranked (same directory first, tests last) and capped (10 sites, 24,000
+characters). Same commit → same text, so an attestor could rebuild it. It is a harness
+prototype, not part of the protocol; the default `none` leaves prompts byte-identical.
+
 Commits use a fixed identity and date, so a case always produces the same prompt.
 
 `quality` + `code` place a case in the evaluation matrix. Policy: only a high-quality
@@ -257,6 +292,11 @@ C asks whether that friction can be cut without approving the misleading reverts
 
 ## Known limits
 
-- Output is capped by the attestor's `max_tokens=1024`. Long answers get cut off,
-  fail to parse, and count as rejections; watch the parse-fail column.
+- Output is capped by the attestor's `max_tokens=1024`. Reasoning models think inside
+  that budget, so `providers.json` raises it (8192) for gpt-5/gpt-6/o-series and Claude
+  5.x models and drops `temperature`; pass `--providers-file providers.json`. The real
+  attestor needs the same `model_extra` entries before such models can be approved.
+- The attestor asks Anthropic models for JSON in the prompt only (no structured output),
+  so Claude sometimes writes invalid JSON (unescaped `\` or `"` from quoted code): about
+  6% of Haiku 5.5 calls in final-v1, all counted as rejections, as the attestor would.
 - Calls run one at a time.

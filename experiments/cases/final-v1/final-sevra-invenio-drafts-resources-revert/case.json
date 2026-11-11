@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-invenio-drafts-resources-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "invenio-drafts-resources",
+  "message": "Update invenio_drafts_resources/services/records/service.py",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/inveniosoftware/invenio-drafts-resources.git",
+    "base": "998ede99c377c84f11fe22c07c20f90c88c463dc",
+    "head": "039b0cff1ad4b952000f4d8c3a93f347108b6626",
+    "reverse": true
+  },
+  "target_issue": "CWE-862, CWE-863: undoes the fix for GHSA-xr38-w74q-r8jv (Permissions not properly checked in Invenio-Drafts-Resources)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-xr38-w74q-r8jv",
+    "advisory": "https://github.com/advisories/GHSA-xr38-w74q-r8jv",
+    "fix_commit": "https://github.com/inveniosoftware/invenio-drafts-resources/commit/039b0cff1ad4b952000f4d8c3a93f347108b6626"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

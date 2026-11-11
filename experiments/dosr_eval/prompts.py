@@ -9,6 +9,11 @@ Templates: any built-in id (dosr_protocol/templates/*.toml), or an experimental
 template in experiments/templates/<id>.toml, in the same file format. Experimental
 templates let us try prompt variants without touching the protocol package; a winner
 gets added to pr_format.py under a new id in a separate PR.
+
+`context` adds harness-only review context (dosr_eval/context.py) after the PR
+Markdown, before the decision schema. The attestor does not build it, so prompts with
+a context other than "none" are experiments, not what DOSR signs today; with "none"
+the prompt is exactly the attestor's.
 """
 
 from dataclasses import dataclass
@@ -26,9 +31,11 @@ from dosr_protocol.pr_format import (
     check_limits,
     pr_metrics,
     render_markdown,
+    text_metrics,
 )
 
 from .cases import Materialized
+from .context import CONTEXTS, context_section
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 
@@ -48,6 +55,7 @@ class ReviewInput:
     pr_hash: str
     metrics: dict
     limit_problems: list[str]
+    context: str = "none"
 
 
 def load_template(template_id: str, templates_dir: Path = TEMPLATES_DIR) -> PRTemplate:
@@ -69,7 +77,10 @@ def load_template(template_id: str, templates_dir: Path = TEMPLATES_DIR) -> PRTe
 
 
 def build_review_input(m: Materialized, template: PRTemplate, decision_schema: str = DECISION_V1,
-                       limits: dict = DEFAULT_LIMITS) -> ReviewInput:
+                       limits: dict = DEFAULT_LIMITS, context: str = "none") -> ReviewInput:
+    """`context`: one of context.CONTEXTS; "none" is the attestor's prompt byte for byte."""
+    if context not in CONTEXTS:
+        raise ValueError(f"unknown context {context!r}: expected one of {', '.join(CONTEXTS)}")
     inputs = pr_inputs(m.git, template, m.parent, m.candidate)
     pr = build_pr(
         template=template,
@@ -79,12 +90,20 @@ def build_review_input(m: Materialized, template: PRTemplate, decision_schema: s
         **inputs,
     )
     markdown = render_markdown(pr, template)
+    # Files the prompt already shows in full: call sites there add nothing.
+    extra = context_section(m, context, skip_paths=set(inputs["full_files"]))
+    if extra:
+        markdown = f"{markdown.rstrip()}\n\n{extra.rstrip()}\n"
     prompt = build_prompt(template, markdown, decision_schema)
+    metrics = pr_metrics(pr, markdown)
+    if extra:
+        metrics["sections"]["related_code"] = text_metrics(extra)
     return ReviewInput(
         template=template.id,
         prompt=prompt,
         review_input_hash=sha256_0x(prompt.encode("utf-8")),
         pr_hash=pr["pr_hash"],
-        metrics=pr_metrics(pr, markdown),
+        metrics=metrics,
         limit_problems=check_limits(limits, inputs["files"], inputs["diff_text"]),
+        context=context,
     )

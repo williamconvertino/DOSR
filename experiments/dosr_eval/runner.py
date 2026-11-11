@@ -37,6 +37,7 @@ class RunConfig:
     pricing: dict = field(default_factory=dict)
     providers_file: Path | None = None
     budget: float | None = None  # stop before spending more than this (pricing currency)
+    context: str = "none"  # extra review context (context.CONTEXTS); "none" = the attestor's prompt
 
 
 def load_pricing(path: Path | None) -> dict:
@@ -71,7 +72,7 @@ def build_inputs(cfg: RunConfig) -> dict[tuple[str, str], ReviewInput]:
     for case in cfg.cases:
         m = materialize(case, cfg.work_dir, cfg.cache_dir)
         for tid, template in templates.items():
-            out[(case.id, tid)] = build_review_input(m, template)
+            out[(case.id, tid)] = build_review_input(m, template, context=cfg.context)
     return out
 
 
@@ -118,6 +119,7 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
         "models": [str(s) for s in cfg.models],
         "reps": cfg.reps,
         "decision_schema": DECISION_V1,
+        "context": cfg.context,
         "budget": cfg.budget,
     }
     meta_path = cfg.out_dir / f"{run_id}.meta.json"
@@ -154,6 +156,7 @@ def run(cfg: RunConfig, inputs: dict | None = None, backends: dict | None = None
                             "expected": case.expected,
                             "target_issue": case.target_issue,  # for grading only; never in the prompt
                             "template": tid,
+                            "context": cfg.context,
                             "model": name,
                             "rep": rep,
                             "review_input_hash": ri.review_input_hash,

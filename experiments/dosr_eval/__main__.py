@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .cases import CaseError, load_cases, materialize
+from .context import CONTEXTS
 from .metrics import load_grades, load_rows, report, row_key, write_grade_sheet
 from .prompts import build_review_input, load_template
 from .reviewers import ModelSpec, api_key_env, attestor_reviewers, find_key, load_dotenv
@@ -35,9 +36,12 @@ def cmd_list(args) -> int:
 def cmd_prompt(args) -> int:
     (case,) = load_cases(args.cases, [args.case])
     m = materialize(case, EXPERIMENTS / ".cache" / "work", EXPERIMENTS / ".cache" / "git")
-    ri = build_review_input(m, load_template(args.template))
+    ri = build_review_input(m, load_template(args.template), context=args.context)
     print(ri.prompt)
+    extra = ri.metrics["sections"].get("related_code")
     print(f"\n--- review_input_hash {ri.review_input_hash} · ~{ri.metrics['total']['est_tokens']:,} tokens"
+          + (f" · context {args.context}: +{extra['chars']:,} chars (~{extra['est_tokens']:,} tokens)"
+             if extra else "")
           + (f" · ⚠ {'; '.join(ri.limit_problems)}" if ri.limit_problems else ""), file=sys.stderr)
     return 0
 
@@ -65,6 +69,7 @@ def cmd_run(args) -> int:
         pricing=_pricing(args.pricing),
         providers_file=args.providers_file,
         budget=args.budget,
+        context=args.context,
     )
     inputs = build_inputs(cfg)
     calls = len(inputs) * len(cfg.models) * cfg.reps
@@ -194,6 +199,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("prompt", help="print the exact prompt a case produces (no model call)")
     p.add_argument("case")
     p.add_argument("--template", default=DEFAULT_TEMPLATE)
+    p.add_argument("--context", choices=CONTEXTS, default="none",
+                   help="extra review context (harness only, not the attestor's prompt): callers = call sites")
     p.set_defaults(fn=cmd_prompt)
 
     p = sub.add_parser("run", help="review cases and write results JSONL")
@@ -211,6 +218,9 @@ def main(argv=None) -> int:
                    help="allow calls to paid models (anything but mock/); without it only the plan is printed")
     p.add_argument("--budget", type=float,
                    help="stop before a call that could take the spend over this (pricing currency)")
+    p.add_argument("--context", choices=CONTEXTS, default="none",
+                   help="extra review context (harness only, not the attestor's prompt): "
+                        "callers = call sites of the changed functions (default none)")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("import-sevra", help="write fix / revert / misleading-revert cases for SEVRA vulns")

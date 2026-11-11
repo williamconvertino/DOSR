@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-publify-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "publify",
+  "message": "Update publify_core/app/models/feedback.rb and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/publify/publify.git",
+    "base": "44ba63fa7fbe22276ac3f239cd086eda8bf71c29",
+    "head": "b50df050c593cc532b2c516792989bcfce2d73f7"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-w78q-4w34-jrjx",
+    "advisory": "https://github.com/advisories/GHSA-w78q-4w34-jrjx",
+    "fix_commit": "https://github.com/publify/publify/commit/b50df050c593cc532b2c516792989bcfce2d73f7"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

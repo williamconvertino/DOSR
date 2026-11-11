@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-portprocesses-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "PortProcesses",
+  "message": "Update cli.js and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/rrainn/PortProcesses.git",
+    "base": "fffceb09aff7180afbd0bd172e820404b33c8299",
+    "head": "86811216c9b97b01b5722f879f8c88a7aa4214e1"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-vm67-7vmg-66vm",
+    "advisory": "https://github.com/advisories/GHSA-vm67-7vmg-66vm",
+    "fix_commit": "https://github.com/rrainn/PortProcesses/commit/86811216c9b97b01b5722f879f8c88a7aa4214e1"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

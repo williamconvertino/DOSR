@@ -153,6 +153,9 @@ def test_issue_test_failures_needs_the_issues_own_tests():
     assert importers.issue_test_failures(report(env_only + [django_own, pytest_own]), test_patch) == \
         [django_own, pytest_own]
     assert importers.issue_test_failures({}, test_patch) == []
+    sympy_patch = "diff --git a/sympy/t/test_p.py b/sympy/t/test_p.py\n+def test_issue_13546():\n"
+    assert importers.issue_test_failures(report(["test_issue_13546", "test_other"]), sympy_patch) == \
+        ["test_issue_13546"]
 
 
 def test_report_combines_runs(tmp_path, capsys):
@@ -163,3 +166,14 @@ def test_report_combines_runs(tmp_path, capsys):
     b.write_text(json.dumps({**_row("y", "reject", True), "run_id": "r2"}))
     assert main(["report", str(a), str(b)]) == 0
     assert "| 2 | 0 | 50% |" in capsys.readouterr().out
+
+
+def test_classify_failure_from_report():
+    def report(f2p, p2p):
+        return {"x": {"tests_status": {"FAIL_TO_PASS": {"failure": f2p, "success": []},
+                                       "PASS_TO_PASS": {"failure": p2p, "success": ["t_ok"]}}}}
+    assert importers.classify_failure(report(["t_new"], [])) == \
+        {"failure_type": "did_not_fix", "pass_to_pass_failures": []}
+    assert importers.classify_failure(report(["t_new"], ["t_old"])) == \
+        {"failure_type": "broke_other_code", "pass_to_pass_failures": ["t_old"]}
+    assert importers.classify_failure({})["failure_type"] == "did_not_fix"

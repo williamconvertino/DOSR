@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-http4s-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "http4s",
+  "message": "Update core/src/main/scala/org/http4s/StaticFile.scala and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/http4s/http4s.git",
+    "base": "3ce0bfc9586cc20f6a3ca7bcc423c32741f9fc9e",
+    "head": "52e1890665410b4385e37b96bc49c5e3c708e4e9"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-6h7w-fc84-x7p6",
+    "advisory": "https://github.com/advisories/GHSA-6h7w-fc84-x7p6",
+    "fix_commit": "https://github.com/http4s/http4s/commit/52e1890665410b4385e37b96bc49c5e3c708e4e9"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

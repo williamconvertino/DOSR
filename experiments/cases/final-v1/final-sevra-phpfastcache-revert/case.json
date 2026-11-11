@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-phpfastcache-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "phpfastcache",
+  "message": "Update src/phpFastCache/Drivers/Cookie/Driver.php",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/PHPSocialNetwork/phpfastcache.git",
+    "base": "afb1d158aee1eaa07857909d43f6ce3570b82a30",
+    "head": "c4527205cb7a402b595790c74310791f5b04a1a4",
+    "reverse": true
+  },
+  "target_issue": "CWE-94: undoes the fix for GHSA-484f-743f-6jx2 (Object injection in cookie driver in phpfastcache)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-484f-743f-6jx2",
+    "advisory": "https://github.com/advisories/GHSA-484f-743f-6jx2",
+    "fix_commit": "https://github.com/PHPSocialNetwork/phpfastcache/commit/c4527205cb7a402b595790c74310791f5b04a1a4"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

@@ -20,7 +20,9 @@ SWE-bench Verified (functional; https://huggingface.co/datasets/SWE-bench/SWE-be
     enough: the run's official report.json must show the patch failing at least one
     of the issue's own tests (FAIL_TO_PASS tests next to the files the issue's test
     patch touches). Patches that fail only elsewhere, e.g. on test-environment errors,
-    are skipped.
+    are skipped. The -fail case's `source.failure_type` records how it fails:
+    `broke_other_code` (some PASS_TO_PASS test now fails; listed in
+    `source.pass_to_pass_failures`) or `did_not_fix` (only the issue's tests fail).
 
 Downloads are cached under experiments/.cache/downloads. GitHub API calls are
 unauthenticated (60/hour) unless GITHUB_TOKEN is set.
@@ -249,17 +251,29 @@ def issue_test_failures(report: dict, test_patch: str) -> list[str]:
     dirs = {posixpath.dirname(f) for f in patch_files(test_patch)}
     status = next(iter(report.values()), {}).get("tests_status", {}) if report else {}
     failed = status.get("FAIL_TO_PASS", {}).get("failure", [])
-    return [t for t in failed if _test_dir(t) in dirs]
+    # sympy reports bare function names (`test_issue_13546`); those count when the
+    # issue's test patch adds or touches that function.
+    return [t for t in failed if _test_dir(t) in dirs
+            or (re.fullmatch(r"\w+", t) and re.search(rf"\b{t}\b", test_patch))]
 
 
-def verified_failure(run: str, iid: str, inst: dict, log=print) -> list[str]:
-    """The issue's own tests that `run`'s patch fails, from the official report.json."""
+def classify_failure(report: dict) -> dict:
+    """How a failing patch fails, from its report.json: `broke_other_code` if any
+    PASS_TO_PASS test (one that passed before the patch) now fails, else `did_not_fix`."""
+    status = next(iter(report.values()), {}).get("tests_status", {}) if report else {}
+    p2p = list(status.get("PASS_TO_PASS", {}).get("failure", []))
+    return {"failure_type": "broke_other_code" if p2p else "did_not_fix", "pass_to_pass_failures": p2p}
+
+
+def verified_failure(run: str, iid: str, inst: dict, log=print) -> tuple[list[str], dict]:
+    """(the issue's own tests that `run`'s patch fails, classify_failure()), from the
+    official report.json."""
     try:
         report = fetch_json(LEADERBOARD_REPORT.format(run=run, iid=iid))
     except CaseError as e:
         log(f"  {iid}: no official report ({e}); skipped")
-        return []
-    return issue_test_failures(report, inst["test_patch"])
+        return [], {}
+    return issue_test_failures(report, inst["test_patch"]), classify_failure(report)
 
 
 def _issue_message(problem: str, limit: int = 3000) -> str:
@@ -280,6 +294,7 @@ def import_swebench(out: Path, run: str = DEFAULT_RUN, ids: list[str] | None = N
     instances = verified_instances()
     resolved, preds = leaderboard_run(run)
     failing = {}  # instance id -> the issue's own tests the patch fails (official report.json)
+    kinds = {}    # instance id -> classify_failure() of that report
     if ids:
         unknown = [i for i in ids if i not in instances]
         if unknown:
@@ -288,7 +303,7 @@ def import_swebench(out: Path, run: str = DEFAULT_RUN, ids: list[str] | None = N
         if bad:
             raise CaseError(f"{run} has no failing patch for: {', '.join(bad)}")
         for iid in ids:
-            failing[iid] = verified_failure(run, iid, instances[iid], log)
+            failing[iid], kinds[iid] = verified_failure(run, iid, instances[iid], log)
             if not failing[iid]:
                 raise CaseError(f"{iid}: {run}'s patch does not fail the issue's own tests (official report.json)")
         chosen = ids
@@ -298,7 +313,7 @@ def import_swebench(out: Path, run: str = DEFAULT_RUN, ids: list[str] | None = N
             repo = instances[iid]["repo"]
             if repo in taken or iid in (skip or ()) or (repos and repo not in repos):
                 continue  # one issue per repository
-            failing[iid] = verified_failure(run, iid, instances[iid], log)
+            failing[iid], kinds[iid] = verified_failure(run, iid, instances[iid], log)
             if not failing[iid]:
                 log(f"  {iid}: unresolved, but not because of the issue's own tests; skipped")
                 continue
@@ -307,6 +322,9 @@ def import_swebench(out: Path, run: str = DEFAULT_RUN, ids: list[str] | None = N
             if len(chosen) == pick:
                 break
         log(f"  picked {len(chosen)} issue(s) from {run}: {', '.join(chosen)}")
+    for iid in chosen:
+        log(f"  {iid}: {kinds[iid]['failure_type']} ({len(failing[iid])} issue test(s) failed, "
+            f"{len(kinds[iid]['pass_to_pass_failures'])} PASS_TO_PASS)")
 
     written = []
     for iid in chosen:
@@ -330,6 +348,8 @@ def import_swebench(out: Path, run: str = DEFAULT_RUN, ids: list[str] | None = N
             "target_issue": f"Does not resolve the issue: fails {', '.join(tests[:3])}"
                             + (f" (+{len(tests) - 3} more)" if len(tests) > 3 else ""),
             "source": {**source, "leaderboard_run": run, "fails_issue_tests": tests,
+                       "failure_type": kinds[iid]["failure_type"],
+                       "pass_to_pass_failures": kinds[iid]["pass_to_pass_failures"],
                        "report": LEADERBOARD_REPORT.format(run=run, iid=iid)},
             "notes": "A leaderboard patch for this issue that fails the issue's own tests (official report.json); "
                      "same message as the gold case.",
