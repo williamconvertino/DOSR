@@ -88,3 +88,41 @@ def test_write_outputs(tmp_path):
     pytest.importorskip("matplotlib")
     assert {"fig_framings.pdf", "fig_framings.png"} <= names
     assert (tmp_path / "fig_framings.png").stat().st_size > 0
+
+
+def _vrow(case, expected, model, rep, approved, cost=0.01, template="exp-blocking-only-v1"):
+    return {"run_id": "r", "case": case, "dataset": "SEVRA", "category": "vuln", "expected": expected,
+            "template": template, "model": model, "rep": rep, "approved": approved, "parse_error": None,
+            "cost": cost}
+
+
+def test_approval_policies_by_hand():
+    from dosr_eval.paper import approval_policies, approvals_md, approvals_tex, blind_spots
+
+    a, b = "p/a@1", "p/b@1"
+    rows = [
+        # bad PR: model a approves 2 of 3 runs, model b approves 1 of 3
+        *[_vrow("bad", "reject", a, i, ok) for i, ok in enumerate([True, True, False])],
+        *[_vrow("bad", "reject", b, i, ok) for i, ok in enumerate([True, False, False])],
+        # good PR: a always approves, b rejects once
+        *[_vrow("good", "approve", a, i, True) for i in range(3)],
+        *[_vrow("good", "approve", b, i, ok) for i, ok in enumerate([True, True, False])],
+    ]
+    pol = {p["policy"]: p for p in approval_policies(rows)}
+    assert abs(pol[(a,)]["miss"] - 2 / 3) < 1e-9 and pol[(a,)]["false_reject"] == 0
+    # same model twice: a's distinct run pairs (T,T),(T,F),(T,F) -> 1 of 3 approve
+    assert abs(pol[(a, a)]["miss"] - 1 / 3) < 1e-9
+    # both models: 2/3 x 1/3 = 2/9 of the 9 pairings approve the bad PR
+    assert abs(pol[(a, b)]["miss"] - 2 / 9) < 1e-9
+    # good PR rejected whenever b rejects: 1 - (3/3 x 2/3) = 1/3
+    assert abs(pol[(a, b)]["false_reject"] - 1 / 3) < 1e-9
+    assert abs(pol[(a, b)]["cost"] - 0.02) < 1e-12 and pol[(a, b)]["kind"] == "two models, both approve"
+    assert blind_spots(rows, "exp-blocking-only-v1")["both"] == ["bad"]
+    assert r"\label{tab:approvals}" in approvals_tex(rows) and "missed by both: 1" in approvals_md(rows)
+
+
+def test_approvals_need_two_models():
+    from dosr_eval.paper import approvals_md, approvals_tex
+
+    rows = [_vrow("bad", "reject", "p/a@1", i, False) for i in range(3)]
+    assert approvals_md(rows) == "" and approvals_tex(rows) == ""

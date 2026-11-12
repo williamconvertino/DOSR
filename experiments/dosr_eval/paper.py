@@ -5,6 +5,9 @@
     fig_misleading.{pdf,png} reject rate on reverted fixes: neutral vs misleading PR text
     fig_framings.{pdf,png} bad PRs accepted per SEVRA framing (attacker economics), with 95% CIs
     framings.md            the framing table as Markdown, for quick reading
+    approvals.md           approval policies simulated from the runs (one model, the same model
+                           twice, two models that must both approve) and shared blind spots;
+                           also tab:approvals in tables.tex (needs 2+ models)
 
 Figures need matplotlib (`pip install -e "experiments[figures]"`); tables do not.
 Sized for a USENIX two-column page (3.33in column, 7in full width).
@@ -171,6 +174,130 @@ def framings_md(rows: list[dict], currency: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+# ------------------------------------------------------------------ approval policies
+
+def _verdicts(rows: list[dict]) -> dict[tuple, list[bool]]:
+    """(template, model, case) -> approved per scored call (provider errors left out)."""
+    out = defaultdict(list)
+    for r in rows:
+        if verdict(r) is not None:
+            out[(r["template"], r["model"], r["case"])].append(verdict(r) == "approve")
+    return out
+
+
+def _pairs(a: list[bool], b: list[bool] | None) -> list[tuple[bool, bool]]:
+    """Every pairing of one call from each side; with b None, distinct calls of a."""
+    if b is None:
+        return [(a[i], a[j]) for i in range(len(a)) for j in range(i + 1, len(a))]
+    return [(x, y) for x in a for y in b]
+
+
+def approval_policies(rows: list[dict]) -> list[dict]:
+    """DOSR's `minimum_approvals`, simulated from finished runs (no new calls): one model,
+    the same model approving twice (two independent calls), or two different models that
+    must both approve. Each case counts equally; its pairs are averaged."""
+    v = _verdicts(rows)
+    expected = {r["case"]: r["expected"] for r in rows}
+    cost = defaultdict(list)
+    for r in rows:
+        if r.get("cost") is not None:
+            cost[(r["template"], r["model"])].append(r["cost"])
+    mean_cost = {k: sum(c) / len(c) for k, c in cost.items()}
+    out = []
+    for tid in sorted({t for t, _, _ in v}, key=template_label):
+        models = sorted({m for t, m, _ in v if t == tid})
+        policies = [(m,) for m in models] + [(m, m) for m in models]
+        policies += [(a, b) for i, a in enumerate(models) for b in models[i + 1:]]
+        for pol in policies:
+            per_case = {}
+            for case in sorted({c for t, m, c in v if t == tid and m == pol[0]}):
+                a = v.get((tid, pol[0], case))
+                b = v.get((tid, pol[1], case)) if len(pol) == 2 and pol[1] != pol[0] else None
+                if not a or (len(pol) == 2 and pol[1] != pol[0] and not b):
+                    continue
+                if len(pol) == 1:
+                    outcomes = a
+                else:
+                    outcomes = [x and y for x, y in _pairs(a, b)]
+                if outcomes:
+                    per_case[case] = sum(outcomes) / len(outcomes)  # share of approvals
+            good = [p for c, p in per_case.items() if expected[c] == "approve"]
+            bad = [p for c, p in per_case.items() if expected[c] == "reject"]
+            costs = [mean_cost.get((tid, m)) for m in pol]
+            out.append({
+                "template": tid, "policy": pol,
+                "kind": "one model" if len(pol) == 1 else ("same model twice" if pol[0] == pol[1]
+                                                            else "two models, both approve"),
+                "false_reject": 1 - sum(good) / len(good) if good else None,
+                "miss": sum(bad) / len(bad) if bad else None,
+                "cost": sum(costs) if None not in costs else None,
+                "cases": len(per_case),
+            })
+    return out
+
+
+def blind_spots(rows: list[dict], template: str) -> dict:
+    """Bad cases each model ever approved (in any run), and their overlap."""
+    v = _verdicts(rows)
+    expected = {r["case"]: r["expected"] for r in rows}
+    missed = defaultdict(set)
+    for (t, m, c), approved in v.items():
+        if t == template and expected[c] == "reject" and any(approved):
+            missed[m].add(c)
+    models = sorted({m for t, m, _ in v if t == template})
+    both = set.intersection(*(missed[m] for m in models)) if len(models) > 1 else set()
+    return {"models": models, "missed": {m: sorted(missed[m]) for m in models}, "both": sorted(both)}
+
+
+def _policy_label(p: dict) -> str:
+    short = [m.split("/")[-1].split("@")[0] for m in p["policy"]]
+    return short[0] if len(short) == 1 else (f"{short[0]} ×2" if short[0] == short[1] else " + ".join(short))
+
+
+def approvals_tex(rows: list[dict], currency: str = "") -> str:
+    pols = approval_policies(rows)
+    if len({m for p in pols for m in p["policy"]}) < 2:
+        return ""
+    cur = f" ({_tex(currency)})" if currency else ""
+    out = [r"\begin{table}[t]", r"\centering\small", r"\begin{tabular}{llrrr}", r"\toprule",
+           rf"Template & Approval policy & False rej. & Miss & Cost/PR{cur} \\", r"\midrule"]
+    prev = None
+    for p in pols:
+        if prev and prev != p["template"]:
+            out.append(r"\addlinespace")
+        prev = p["template"]
+        out.append(f"{_tex(template_label(p['template']))} & {_tex(_policy_label(p))} & "
+                   f"{_pct(p['false_reject'])} & {_pct(p['miss'])} & {_num(p['cost'], '{:.4f}')} \\\\")
+    out += [r"\bottomrule", r"\end{tabular}",
+            r"\caption{Approval policies simulated from the recorded runs (no new calls): one model; the same "
+            r"model approving twice (two independent calls); two different models that must both approve "
+            r"(DOSR's \texttt{minimum\_approvals}). Each case weighs equally; its run pairings are averaged.}",
+            r"\label{tab:approvals}", r"\end{table}", ""]
+    return "\n".join(out)
+
+
+def approvals_md(rows: list[dict], currency: str = "") -> str:
+    pols = approval_policies(rows)
+    if len({m for p in pols for m in p["policy"]}) < 2:
+        return ""
+    cur = f" ({currency})" if currency else ""
+    lines = ["# Approval policies (simulated from recorded runs, no new calls)", "",
+             f"| Template | Policy | Kind | False reject | Miss | Cost/PR{cur} |", "|---|---|---|---|---|---|"]
+    for p in pols:
+        lines.append(f"| {template_label(p['template'])} | {_policy_label(p)} | {p['kind']} | "
+                     f"{_md_num(p['false_reject'], '{:.0%}')} | {_md_num(p['miss'], '{:.0%}')} | "
+                     f"{_md_num(p['cost'], '{:.4f}')} |")
+    lines += ["", "## Blind spots: bad PRs each model approved in at least one run", ""]
+    for tid in sorted({p["template"] for p in pols}, key=template_label):
+        b = blind_spots(rows, tid)
+        counts = ", ".join(f"{m.split('/')[-1].split('@')[0]} {len(b['missed'][m])}" for m in b["models"])
+        lines.append(f"- **{template_label(tid)}**: {counts}; missed by both: {len(b['both'])}"
+                     + (f" ({', '.join(b['both'])})" if b["both"] else ""))
+    lines += ["", "Each case weighs equally; its pairings of runs are averaged (3 x 3 for two models, "
+              "3 for the same model twice). Parse failures count as rejections, as in the attestor."]
+    return "\n".join(lines) + "\n"
+
+
 def tables_tex(rows: list[dict], currency: str = "") -> str:
     by_tm = defaultdict(list)
     for r in rows:
@@ -209,8 +336,8 @@ def tables_tex(rows: list[dict], currency: str = "") -> str:
     out += [r"\bottomrule", r"\end{tabular}",
             r"\caption{Share of correct verdicts per case group (expected verdict in parentheses).}",
             r"\label{tab:verdicts-by-group}", r"\end{table*}", ""]
-    framings = framings_tex(rows, currency)
-    return "\n".join(out) + ("\n" + framings if framings else "")
+    extra = [t for t in (framings_tex(rows, currency), approvals_tex(rows, currency)) if t]
+    return "\n".join(out) + "".join("\n" + t for t in extra)
 
 
 # ------------------------------------------------------------------ figures
@@ -370,6 +497,10 @@ def write_outputs(rows: list[dict], out: Path, currency: str = "") -> list[Path]
     if framing_rows(rows):
         written.append(out / "framings.md")
         written[-1].write_text(framings_md(rows, currency), encoding="utf-8")
+    approvals = approvals_md(rows, currency)
+    if approvals:
+        written.append(out / "approvals.md")
+        written[-1].write_text(approvals, encoding="utf-8")
     try:
         import matplotlib
 

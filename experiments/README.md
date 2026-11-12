@@ -131,6 +131,7 @@ The LaTeX tables need `\usepackage{booktabs,multirow}`.
 | `fig_verdicts.pdf` / `.png` | correct-verdict rate per case group, one bar per template |
 | `fig_misleading.pdf` / `.png` | reject rate on reverted fixes, neutral vs misleading PR text |
 | `framings.md`, `tab:framings` in `tables.tex`, `fig_framings.pdf` / `.png` | bad SEVRA PRs accepted per framing (neutral revert vs each deceptive PR text), with 95% Wilson intervals, attempts per accepted bad PR and attacker cost per accepted bad PR |
+| `approvals.md`, `tab:approvals` in `tables.tex` (2+ models) | DOSR's `minimum_approvals` simulated from the recorded runs, no new calls: one model, the same model approving twice, two different models that must both approve (false reject, miss, cost per PR), and the bad PRs both models approved in some run |
 
 The committed pilot-v1 and final-v1 reports under `reports/` were made with `paper`.
 
