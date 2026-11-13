@@ -1,0 +1,46 @@
+{
+  "id": "final-swe-pylint-dev-pylint-4604-fail",
+  "category": "bug",
+  "expected": "reject",
+  "repo_name": "pylint",
+  "message": "Fix: unused-import false positive for a module used in a type comment\n\nFixes the following issue:\n\nunused-import false positive for a module used in a type comment\n### Steps to reproduce\r\n\r\n```python\r\n\"\"\"Docstring.\"\"\"\r\n\r\nimport abc\r\nfrom abc import ABC\r\n\r\nX = ...  # type: abc.ABC\r\nY = ...  # type: ABC\r\n```\r\n\r\n### Current behavior\r\n\r\n```\r\n************* Module a\r\n/tmp/a.py:3:0: W0611: Unused import abc (unused-import)\r\n\r\n-----------------------------------\r\nYour code has been rated at 7.50/10\r\n```\r\n\r\n### Expected behavior\r\n\r\n`unused-import` should not be emitted.\r\n\r\n### pylint --version output\r\n\r\nResult of `pylint --version` output:\r\n\r\n```\r\npylint 2.8.3\r\nastroid 2.5.6\r\nPython 3.9.2 (default, Feb 28 2021, 17:03:44) \r\n[GCC 10.2.1 20210110]\r\n```\r\n\r\nThis is a follow up to #3112.",
+  "change": {
+    "type": "patch",
+    "url": "https://github.com/pylint-dev/pylint.git",
+    "base": "1e55ae64624d28c5fe8b63ad7979880ee2e6ef3f",
+    "patch": "candidate.diff"
+  },
+  "target_issue": "Does not resolve the issue: fails tests/checkers/unittest_variables.py::TestVariablesChecker::test_bitbucket_issue_78, tests/checkers/unittest_variables.py::TestVariablesChecker::test_no_name_in_module_skipped, tests/checkers/unittest_variables.py::TestVariablesChecker::test_all_elements_without_parent (+18 more)",
+  "source": {
+    "dataset": "SWE-bench Verified",
+    "ref": "pylint-dev__pylint-4604",
+    "leaderboard_run": "20241108_autocoderover-v2.0-claude-3-5-sonnet-20241022",
+    "fails_issue_tests": [
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_bitbucket_issue_78",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_no_name_in_module_skipped",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_all_elements_without_parent",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_custom_modules",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_modname_not_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_redefined_builtin_in_function",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_unassigned_global",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_listcomp_in_decorator",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_listcomp_in_ancestors",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_return_type_annotation",
+      "tests/checkers/unittest_variables.py::TestVariablesChecker::test_attribute_in_type_comment",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_custom_callback_string",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_redefined_builtin_modname_not_ignored",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_redefined_builtin_in_function",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_import_as_underscore",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_lambda_in_classdef",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_nested_lambda",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_ignored_argument_names_no_message",
+      "tests/checkers/unittest_variables.py::TestVariablesCheckerWithTearDown::test_ignored_argument_names_starred_args",
+      "tests/checkers/unittest_variables.py::TestMissingSubmodule::test_package_all"
+    ],
+    "failure_type": "did_not_fix",
+    "pass_to_pass_failures": [],
+    "report": "https://swe-bench-submissions.s3.amazonaws.com/verified/20241108_autocoderover-v2.0-claude-3-5-sonnet-20241022/logs/pylint-dev__pylint-4604/report.json"
+  },
+  "notes": "A leaderboard patch for this issue that fails the issue's own tests (official report.json); same message as the gold case."
+}

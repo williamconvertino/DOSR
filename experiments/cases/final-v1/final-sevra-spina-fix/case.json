@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-spina-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "Spina",
+  "message": "Update app/controllers/spina/application_controller.rb",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/denkGroot/Spina.git",
+    "base": "2b3e8f724a97b312a61503f378a5ce6def58bfe2",
+    "head": "bfe44f289e336f80b6593032679300c493735e75"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-2hxv-mx8x-mcj9",
+    "advisory": "https://github.com/advisories/GHSA-2hxv-mx8x-mcj9",
+    "fix_commit": "https://github.com/denkGroot/Spina/commit/bfe44f289e336f80b6593032679300c493735e75"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

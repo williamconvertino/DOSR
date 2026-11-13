@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-rake-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "rake",
+  "message": "Update lib/rake/file_list.rb",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/ruby/rake.git",
+    "base": "6497ba4d94d12c123df48cc8ab40f0a4eb7fb337",
+    "head": "5b8f8fc41a5d7d7d6a5d767e48464c60884d3aee",
+    "reverse": true
+  },
+  "target_issue": "CWE-78: undoes the fix for GHSA-jppv-gw3r-w3q8 (OS Command Injection in Rake)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-jppv-gw3r-w3q8",
+    "advisory": "https://github.com/advisories/GHSA-jppv-gw3r-w3q8",
+    "fix_commit": "https://github.com/ruby/rake/commit/5b8f8fc41a5d7d7d6a5d767e48464c60884d3aee"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

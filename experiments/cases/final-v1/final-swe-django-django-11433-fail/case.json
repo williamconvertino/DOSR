@@ -1,0 +1,31 @@
+{
+  "id": "final-swe-django-django-11433-fail",
+  "category": "bug",
+  "expected": "reject",
+  "repo_name": "django",
+  "message": "Fix: Allow `cleaned_data` to overwrite fields' default values.\n\nFixes the following issue:\n\nAllow `cleaned_data` to overwrite fields' default values.\nDescription\n\t\nSee comments here: ​https://github.com/django/django/pull/7068/files#r289432409\nCurrently, when submitting a form, if 'some_field' isn't in the data payload (e.g. it wasn't included in the form, perhaps because its value is derived from another field), and 'some_field' has a default value on the model, it cannot be overwritten with 'self.cleaned_data'.\nThis does not really follow the paradigm of modifying data in 'cleaned_data'. It requires the user to copy and overwrite the raw data submitted with the form.",
+  "change": {
+    "type": "patch",
+    "url": "https://github.com/django/django.git",
+    "base": "21b1d239125f1228e579b1ce8d94d4d5feadd2a6",
+    "patch": "candidate.diff"
+  },
+  "target_issue": "Does not resolve the issue: fails test_default_not_populated_on_non_empty_value_in_cleaned_data (model_forms.tests.ModelFormBaseTest)",
+  "source": {
+    "dataset": "SWE-bench Verified",
+    "ref": "django__django-11433",
+    "leaderboard_run": "20241108_autocoderover-v2.0-claude-3-5-sonnet-20241022",
+    "fails_issue_tests": [
+      "test_default_not_populated_on_non_empty_value_in_cleaned_data (model_forms.tests.ModelFormBaseTest)"
+    ],
+    "failure_type": "broke_other_code",
+    "pass_to_pass_failures": [
+      "test_default_not_populated_on_optional_checkbox_input (model_forms.tests.ModelFormBaseTest)",
+      "test_default_populated_on_optional_field (model_forms.tests.ModelFormBaseTest)",
+      "test_default_selectdatewidget (model_forms.tests.ModelFormBaseTest)",
+      "test_default_splitdatetime_field (model_forms.tests.ModelFormBaseTest)"
+    ],
+    "report": "https://swe-bench-submissions.s3.amazonaws.com/verified/20241108_autocoderover-v2.0-claude-3-5-sonnet-20241022/logs/django__django-11433/report.json"
+  },
+  "notes": "A leaderboard patch for this issue that fails the issue's own tests (official report.json); same message as the gold case."
+}

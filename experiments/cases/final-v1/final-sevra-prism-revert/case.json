@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-prism-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "prism",
+  "message": "Update plugins/command-line/prism-command-line.js and 1 other file",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/PrismJS/prism.git",
+    "base": "13b56a9c594bc3792500d4e12cbb4053d4372f7d",
+    "head": "e002e78c343154e1c0ddf9d6a0bb85689e1a5c7c",
+    "reverse": true
+  },
+  "target_issue": "CWE-79: undoes the fix for GHSA-3949-f494-cm99 (Cross-site Scripting in Prism)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-3949-f494-cm99",
+    "advisory": "https://github.com/advisories/GHSA-3949-f494-cm99",
+    "fix_commit": "https://github.com/PrismJS/prism/commit/e002e78c343154e1c0ddf9d6a0bb85689e1a5c7c"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

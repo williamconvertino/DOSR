@@ -1,0 +1,37 @@
+{
+  "run_id": "20261023T174129Z-pilot-luna",
+  "started_at": "2026-10-23T17:41:29.246322+00:00",
+  "dosr_commit": "f5d25973c38912abc4871acecde6951b0dbc1a72",
+  "cases": [
+    "sevra-cjson-fix",
+    "sevra-cjson-revert",
+    "sevra-cjson-revert-misleading-hardening",
+    "sevra-jsonparser-fix",
+    "sevra-jsonparser-revert",
+    "sevra-jsonparser-revert-misleading-hardening",
+    "sevra-madge-fix",
+    "sevra-madge-revert",
+    "sevra-madge-revert-misleading-hardening",
+    "sevra-sequelize-fix",
+    "sevra-sequelize-revert",
+    "sevra-sequelize-revert-misleading-hardening",
+    "swe-astropy-astropy-13033-fail",
+    "swe-astropy-astropy-13033-gold",
+    "swe-django-django-10097-fail",
+    "swe-django-django-10097-gold",
+    "swe-matplotlib-matplotlib-20676-fail",
+    "swe-matplotlib-matplotlib-20676-gold",
+    "swe-mwaskom-seaborn-3187-fail",
+    "swe-mwaskom-seaborn-3187-gold"
+  ],
+  "templates": [
+    "security-sensitive-review-v2",
+    "exp-evidence-v1"
+  ],
+  "models": [
+    "openai/gpt-6-luna@latest"
+  ],
+  "reps": 1,
+  "decision_schema": "dosr-review-decision-v1",
+  "budget": 1.0
+}

@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-wasm3-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "wasm3",
+  "message": "Update source/m3_api_meta_wasi.c and 2 other files",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/wasm3/wasm3.git",
+    "base": "839e57a220547738dc2c1fd2249c8fe8627c7337",
+    "head": "8441c82c4a98f554b12971450220b580c3c2b6df",
+    "reverse": true
+  },
+  "target_issue": "CWE-787: undoes the fix for GHSA-77fq-4xf5-hph4 (Buffer overflow in wasm3)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-77fq-4xf5-hph4",
+    "advisory": "https://github.com/advisories/GHSA-77fq-4xf5-hph4",
+    "fix_commit": "https://github.com/wasm3/wasm3/commit/8441c82c4a98f554b12971450220b580c3c2b6df"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

@@ -1,0 +1,22 @@
+{
+  "id": "final-sevra-mruby-revert",
+  "category": "vuln",
+  "expected": "reject",
+  "repo_name": "mruby",
+  "message": "Update src/gc.c",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/mruby/mruby.git",
+    "base": "491d68bb3004eb8d7deec4a3a682b25de0d4afc2",
+    "head": "5c114c91d4ff31859fcd84cf8bf349b737b90d99",
+    "reverse": true
+  },
+  "target_issue": "CWE-416: undoes the fix for CVE-2017-9527 (The mark_context_stack function in gc.c in mruby through 1.2.0 allows attackers to cause a denial...)",
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "CVE-2017-9527",
+    "advisory": "https://github.com/advisories/GHSA-fxr6-v647-jgmq",
+    "fix_commit": "https://github.com/mruby/mruby/commit/5c114c91d4ff31859fcd84cf8bf349b737b90d99"
+  },
+  "notes": "The fix undone; same neutral message as the fix."
+}

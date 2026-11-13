@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-lucet-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "lucet",
+  "message": "Update lucet-runtime/lucet-runtime-internals/src/instance.rs",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/bytecodealliance/lucet.git",
+    "base": "8fb1fece339927e178f6cfef4eb67328b500237d",
+    "head": "7c7757c772fb709c61b1442bcc1e1fbee97bf4a8"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-hf79-8hjp-rrvq",
+    "advisory": "https://github.com/advisories/GHSA-hf79-8hjp-rrvq",
+    "fix_commit": "https://github.com/bytecodealliance/lucet/commit/7c7757c772fb709c61b1442bcc1e1fbee97bf4a8"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}

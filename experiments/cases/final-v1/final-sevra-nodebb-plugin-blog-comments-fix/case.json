@@ -1,0 +1,20 @@
+{
+  "id": "final-sevra-nodebb-plugin-blog-comments-fix",
+  "category": "benign",
+  "expected": "approve",
+  "repo_name": "nodebb-plugin-blog-comments",
+  "message": "Update library.js",
+  "change": {
+    "type": "git",
+    "url": "https://github.com/psychobunny/nodebb-plugin-blog-comments.git",
+    "base": "ed0156594a44c6429743e314e9b5a313fad60730",
+    "head": "cf43beedb05131937ef46f365ab0a0c6fa6ac618"
+  },
+  "source": {
+    "dataset": "SEVRA",
+    "ref": "GHSA-43m5-c88r-cjvv",
+    "advisory": "https://github.com/advisories/GHSA-43m5-c88r-cjvv",
+    "fix_commit": "https://github.com/psychobunny/nodebb-plugin-blog-comments/commit/cf43beedb05131937ef46f365ab0a0c6fa6ac618"
+  },
+  "notes": "Upstream security fix with a neutral message."
+}
