@@ -1,13 +1,16 @@
-# DOSR demo (week of 10/23)
+# DOSR demo (week of 11/06)
 
-Each computer runs the attestor (`services/attestor`), the client application (CLI + GUI), an
-IPFS node, and a **mock chain**: a local JSON file (`demo/workspace/.chain/state.json`) that
-stands in for the contract and holds each repository's canonical HEAD and genesis policy hash.
+Each computer runs the attestor (`services/attestor`), the client application (CLI + GUI) and
+an IPFS node. Everyone shares one **EVM dev chain**: a local [anvil](https://getfoundry.sh)
+node running the **DOSRRegistry** contract ([contracts/](../contracts/README.md)), which holds
+each repository's genesis, policy hash, trusted attestor keys and canonical HEAD, and moves
+HEAD only for an approved, correctly signed attestation whose parent is the current HEAD.
 Git bundles, PR building, prompts, local validation, attestor verification, EIP-712 signatures,
-LLM review (OpenAI, Claude, Gemini or Zhipu GLM), and **P2P sharing between computers over
-IPFS** ([section 3](#3-p2p-share-repositories-between-two-computers-ipfs)) are real. Only the
-real chain is missing; until it exists, share codes are passed between devices by hand or
-through a dev peer inbox.
+LLM review (OpenAI, Claude, Gemini or Zhipu GLM), **P2P sharing over IPFS**
+([section 3](#3-p2p-share-repositories-between-two-computers-ipfs)) and the **contract** are
+real ([section 4](#4-the-blockchain)). Only the network is a dev one: prefunded test accounts,
+no real ETH, instant blocks. (`--chain mock` still runs the old per-device JSON-file mock chain,
+e.g. without anvil.)
 
 What the demo shows:
 
@@ -21,7 +24,10 @@ What the demo shows:
 | Mismatch (head, checksum, prompt template, model version, ...) → **client stops it** | outcome **BLOCKED** (nothing sent) |
 | User forces it through (modified client) → **attestor rejects** | *Force send* / `--force` → signed **REJECTED** |
 | Well-formed PR → attestor verifies, **LLM reviews**, attestor **signs** | outcome **APPROVED**; *Signed attestation* card |
-| Client verifies the attestation, registers it on the (mock) chain | *Verify attestation* + *Register on chain* steps; canonical HEAD moves |
+| Client verifies the attestation and sends it to the **contract**, which re-checks the signature and `parent == HEAD` | *Verify attestation* + *Register on chain* steps (tx hash, gas); canonical HEAD moves |
+| **Blockchain explorer**: network, repos registered on-chain, every transaction decoded (incl. revert reasons) | **⛓ EVM · block N** pill (top right); `dosr chain --activity` |
+| **Clients confirm their state from the chain**: genesis, policy, attestor keys, every signed transition (rebuilt from calldata), branch vs HEAD | **Chain** tab; `dosr verify` |
+| **Conflicts**: two approved PRs on the same parent → the chain takes the first, the other reverts (`StaleParent`); the loser syncs, rebases, resubmits | outcome **Approved, but another PR landed first** → *Sync & rebase*; scripted scenarios 11–13; `dosr sync` |
 | Latency of every step, sizes, tokens | progress list, *Latency by step*, *PR size by section*, Transfer row |
 | **P2P over IPFS**: publish the canonical HEAD + signed history; another computer imports it, re-verifies every signature, lands its own PRs, and shares them back | *Publish to IPFS* step, **Share (P2P)** tab, **P2P** pill (peers, inbox, import); `dosr publish` / `import` / `pull` |
 
@@ -97,9 +103,16 @@ PY demo/demo.py run --reset --start-attestor          # add --pause to step thro
 | 7 | Carol | create `todo-js` (policy: `mock/deterministic-reviewer@^1.2.0`, custom PR template `team-review-v1`); 2 commits → 1 PR; model 1.1.0 → blocked, forced → rejected; model 1.4.2 | **blocked**, **rejected**, **approved** |
 | 8 | Alice | `secure-vault` (strict policy, does not trust this attestor) | **blocked**, forced → **rejected** |
 | 9 | Mallory | `evaluate()` with `eval()` + "pre-approved" comment, reviewed by the real LLM (needs a key) | **rejected by the LLM**, issues listed |
+| 10 | Carol on device B | `dosr clone calculator-py`: finds the repo and its snapshot **on the chain**, fetches the bundle, verifies it against the chain | cloned (no share code passed) |
+| 11 | Bob (A) vs Carol (B) | both get an **approved** PR on the same HEAD (`--no-register`), then both transactions go into **one block** | **1 landed, 1 StaleParent** |
+| 12 | the loser | `dosr verify` (behind) → `dosr sync` (snapshot from the chain + rebase) → `dosr submit` | synced, **approved** |
+| 13 | both | winner syncs (fast-forward), both `dosr verify` | both devices **agree** on one verified HEAD |
 
 Everything the attestor rejects in 3–8 is stopped by deterministic checks *before* any model
 call (so it costs nothing). Scenario 9 passes every check and is rejected by the model itself.
+The summary ends with `dosr chain --activity`: every repo on the chain and the last
+transactions, including the reverted one from the race. (With `--chain mock`, 10 is the old
+share-code round trip and 11–13 are skipped.)
 
 ## 2b. Live GUI demo
 
@@ -118,8 +131,9 @@ the GUI shows the same repos and history. Suggested walkthrough:
    `docs/*.md, package.json`, and the custom PR template `team-review-v1` (*View* shows the file
    and a preview; *+ New template…* opens the editor to make your own: copy any template, edit
    the TOML, *Check & preview*, *Save*). *Create repository* runs git init, writes the immutable
-   `.dosr/policy.json`, makes the genesis commit, and registers it on the mock chain.
-   **Config** tab: the policy, hashes, and the mock-chain record.
+   `.dosr/policy.json`, makes the genesis commit, and registers it on the chain (a
+   `registerRepository` transaction: click the **⛓** pill to see it).
+   **Config** tab: the policy, hashes, and the on-chain record.
 3. **Files**: edit `src/todo.js`, *Save* (Ctrl+S). `.dosr/policy.json` is read-only.
    **Changes**: diff against the canonical HEAD.
 4. Switch to *Bob*. **Submit PR**: commit message → *Submit to DOSR*. Watch the 12 steps live
@@ -140,6 +154,9 @@ the GUI shows the same repos and history. Suggested walkthrough:
    attestor.
 7. Switch to *Mallory* (asks for an unapproved model) → blocked; with Force send → rejected.
 8. **History**: every submission, with its PR document, prompt, request, and attestor response.
+9. **Chain** tab: *Is my copy the canonical one?* (every check against the chain), the canonical
+   history (block, tx, who submitted, signature re-verified), snapshots. **⛓** pill: the
+   explorer (see [section 4](#4-the-blockchain) for the race demo).
 
 | Bad-request mode | What it breaks | Client check that blocks it |
 |---|---|---|
@@ -151,20 +168,23 @@ the GUI shows the same repos and history. Suggested walkthrough:
 | `modified-policy` | loosened policy with a recomputed hash | `policy_hash_matches_genesis` |
 | `malformed-request` / `empty-bundle` | schema / empty part (forced → HTTP 422 / 400) | `request_is_well_formed` / `bundle_hash_matches` |
 
-`PY demo/demo.py reset` wipes `demo/workspace/` (repos + chain state + attestor cache).
+`PY demo/demo.py reset` wipes `demo/workspace/` (repos + attestor cache) and resets the dev
+chain (empty, contract redeployed at the same address; `--keep-chain` to keep it).
 
 ## 3. P2P: share repositories between two computers (IPFS)
 
-Each computer runs its own DOSR: client, attestor, mock chain, and an **IPFS node**. Publishing
+Each computer runs its own DOSR: client, attestor, and an **IPFS node**. Publishing
 puts a git bundle of the canonical HEAD on IPFS, plus a small manifest holding the signed
-attestation for every accepted PR. The manifest's CID is the **share code**. The other computer
-imports the share code, and its client checks everything before its copy moves: the bundle
-sha256, that the history starts at the genesis with the registered policy, and every EIP-712
-signature (replayed on its own mock chain, which also enforces parent == HEAD).
+attestation for every accepted PR. The manifest's CID is the **share code**, and it is also
+recorded on the chain as the repo's latest **snapshot**. The other computer imports it, and its
+client checks everything before its copy moves: the bundle sha256, that the history starts at
+the genesis and policy hash **the chain registered**, that the HEAD is one the chain accepted,
+and that every signed transition matches the one recorded on the chain.
 
-**No blockchain yet.** With a real contract, both devices would read the canonical HEAD from
-the chain. For now, the share code carries the signed history, and you pass it between devices
-in one of two ways:
+**With a shared chain you need nothing else**: the other device finds the repo and its snapshot
+on the chain (**⛓** pill → *Clone*, or the Chain tab → *Sync*; `dosr clone` / `dosr sync`). Both
+computers must use the same chain: see [Two computers, one chain](#two-computers-one-chain).
+Share codes still work as before, passed in one of two ways:
 - **Automatically:** add each other as *peers* once. Every publish then lands in the other
   device's **inbox** (a small dev-only HTTP endpoint on port 8790).
 - **By hand:** copy the share code (and, optionally, the commit hash) into chat, then paste it
@@ -202,10 +222,11 @@ connections if asked. The top-right pill should turn green: **IPFS · N peers**.
 | 4 | **P2P → Inbox → Pull**. B's signed transition is verified and applied, and the files fast-forward. | |
 | 5 | Keep going, in either direction. | |
 
-**Take turns.** If both computers land a PR on the same parent before pulling, the second pull
-reports a **conflict** (two transactions racing on a real chain would do the same thing). The
-error offers **Adopt their history (dev)**, which drops your conflicting change for that repo
-(it stays in `git reflog`).
+**Racing is fine.** If both computers get a PR approved on the same parent, the chain lands the
+first and rejects the second (*Approved, but another PR landed first*). The loser clicks
+**Sync & rebase** and submits again. (Only with `--chain mock`, where each device has its own
+chain, do the two histories fork; the import then reports a **conflict** and offers *Adopt
+their history (dev)*.)
 
 ### Without a second computer
 
@@ -245,6 +266,73 @@ PY -m dosr_client.cli p2p                                               # IPFS p
 Code: `apps/client/dosr_client/p2p.py` (publish/import/verify), `ipfs.py` (Kubo RPC client and
 local fallback), `inbox.py` (peer inbox). Tests: `apps/client/tests/test_p2p.py`.
 
+## 4. The blockchain
+
+`demo.py up` / `pair` / `run` start the dev chain for you (`demo.py chain` runs it alone): the
+first time, the launcher downloads Foundry's **anvil** (checked against its published sha256)
+into `demo/.foundry/`. anvil listens on `http://127.0.0.1:8545` (chain id 31337), mines a block
+per transaction, and saves its state to `demo/.chain/anvil-state.json` so repos survive
+restarts. The contract is deployed once, always at `0x5FbDB2315678afecb367f032d93F642f64180aa3`.
+Accounts are anvil's public, prefunded test accounts (no real money): each demo profile has its
+own (`chain_account` in `clients/*.json`) and pays its own gas, so the explorer shows who sent
+what.
+
+| Contract call | When |
+|---|---|
+| `registerRepository` | *+ New* / `dosr init`: genesis, policy hash, the policy's attestor keys |
+| `acceptTransition` | *Register on chain* step / *Land on chain* / `dosr land`: the signed attestation; the contract recomputes the EIP-712 digest, recovers the signer, checks approval, expiry, policy hash and `parent == HEAD` |
+| `publishSnapshot` | *Publish to IPFS* step: the share code for the current HEAD, so others can fetch its Git objects |
+
+**Show the class the explorer:** click **⛓ EVM · block N** (top right): the network and contract
+(its code is checked against `contracts/src/DOSRRegistry.sol`), every repository on the chain
+(*Clone* the ones this device lacks), and every transaction: block, sender, decoded call, gas,
+and for failed ones the contract's revert reason. It refreshes live.
+
+**Race demo in the GUI** (the conflict case):
+1. Double-click `start-two-clients` (or `demo.py pair`): Laptop A (Alice) and Laptop B (Bob) on the
+   **same chain**. On A, *+ New* → *calculator-py*. On B, ⛓ → *Clone* it (from the chain alone).
+2. On both: edit a different file, untick **Register approval on chain**, *Submit to DOSR*. Both
+   come back **Approved**: both attestations are valid, for the same parent.
+3. Both open the **Chain** tab: each lists its approval under *Approved, waiting to land*. Click
+   **Land on chain** on A, then on B. A's lands; B's is rejected by the contract:
+   `StaleParent`. In the explorer, B's transaction is the red *reverted: StaleParent* row.
+4. On B: *Sync & rebase* (fetches A's commit through the snapshot on the chain, rebases B's
+   commit onto it), then *Submit PR* again → approved and landed on top. A's GUI notices the new
+   HEAD on the chain within 2 s; its *Sync* fast-forwards.
+5. Both Chain tabs now say **in-sync** with the same HEAD, every check green.
+
+(Leaving *Register* ticked and submitting on both at once also works: whoever's transaction is
+second gets **Approved, but another PR landed first** with a *Sync & rebase* button.)
+
+### CLI
+
+```bash
+PY -m dosr_client.cli chain --activity          # network, repos on the chain, last transactions
+PY -m dosr_client.cli -C demo/workspace/calculator-py verify    # this clone vs the chain
+PY -m dosr_client.cli -C demo/workspace/calculator-py sync      # fetch + fast-forward / rebase
+PY -m dosr_client.cli -C demo/workspace/calculator-py submit --no-register -m "…"   # approve only
+PY -m dosr_client.cli -C demo/workspace/calculator-py land      # send that approval later
+PY -m dosr_client.cli clone calculator-py --workspace demo/workspace-b
+```
+
+The CLI uses the chain from `--chain evm --rpc-url … --contract …`, or `DOSR_CHAIN` /
+`DOSR_RPC_URL` / `DOSR_CONTRACT`. `demo.py` passes them for you.
+
+### Two computers, one chain
+
+One computer hosts the chain: `PY demo/demo.py chain --host 0.0.0.0` (allow port 8545 in the
+firewall). On **both** computers set `DOSR_RPC_URL=http://<host-ip>:8545` (in `.env` or the
+environment), then start `demo.py up` as usual: every attestor and client reads and writes that
+one chain. IPFS still carries the Git objects (section 3).
+
+| Symptom | Fix |
+|---|---|
+| Pill says **chain down** | `PY demo/demo.py chain` (or restart `demo.py up`); is something else on port 8545? |
+| **no contract** | the node was reset by hand: restart `demo.py up` (it redeploys) or `dosr chain --deploy` |
+| Attestor rejects with `chain_matches` | that attestor reads another chain: stop it, let `demo.py` start one |
+| Sync: *nobody has published a snapshot* | the PR's author was offline or P2P off: on their device, Share tab → *Publish now* |
+| anvil cannot be downloaded | `PY demo/demo.py --chain mock up` runs everything on per-device mock chains |
+
 ## Contents
 
 - `projects/`: seed projects. `files/` is the initial tree, `changes/<id>/` is overlaid for
@@ -253,7 +341,8 @@ local fallback), `inbox.py` (peer inbox). Tests: `apps/client/tests/test_p2p.py`
 - `clients/`: fake client profiles (git identity, review-model choice, bundle mode).
 - `templates/`: custom PR template files (see [templates/README.md](templates/README.md) for the
   format). `demo.py` adds this folder to `DOSR_TEMPLATES`, and GUI-saved templates land here.
-- `workspace/`: generated repos + `.chain/state.json` (git-ignored). `workspace-b/` etc.: the
+- `workspace/`: generated repos (+ `.chain/state.json` with `--chain mock`) (git-ignored).
+- `.foundry/` (anvil binary) and `.chain/` (dev chain state, log) (git-ignored). `workspace-b/` etc.: the
   same for simulated extra devices (`--device b`).
 - `.ipfs/`: the IPFS binary (`bin/`), the node's data (`repo/`), and the local fallback store
   (git-ignored).

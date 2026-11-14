@@ -19,7 +19,7 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from dosr_chain import MockChain
+from dosr_chain import MockChain, StaleParentError
 from dosr_git import create_bundle, pr_inputs
 from dosr_protocol.canonical import new_request_id, policy_hash, qualify_oid, sha256_0x, unqualify_oid
 from dosr_protocol.decision import build_prompt
@@ -60,7 +60,7 @@ STEPS = [
     ("upload", "Send PR to attestor"),
     ("await", "Wait for attestor decision"),
     ("verify", "Verify attestation"),
-    ("register", "Register on chain (mock)"),
+    ("register", "Register on chain"),
     ("publish", "Publish to IPFS"),
 ]
 
@@ -104,7 +104,7 @@ class Step:
 class SubmitOptions:
     message: str | None = None  # commit message, if there are uncommitted changes
     model: dict | None = None  # {provider, model, version}; overrides profile/policy default
-    register: bool = True  # submit approved transitions to the (mock) chain
+    register: bool = True  # submit approved transitions to the chain
     dry_run: bool = False  # build + validate locally, send nothing
     bundle_mode: str | None = None  # "full" | "thin"; defaults to the profile's
     bad_request: str | None = None  # demo only: one of BAD_REQUESTS
@@ -267,7 +267,7 @@ class Submission:
         self.request_id = new_request_id()
         self.timings = TimingStore(repo.state_dir / "timings.json")
         self.steps = [Step(i, label, estimate_ms=self.timings.estimate_ms(i)) for i, label in STEPS]
-        self.outcome = "pending"  # pending | running | approved | rejected | blocked | error | dry-run
+        self.outcome = "pending"  # pending | running | approved | rejected | blocked | conflict | error | dry-run
         self.decision: dict | None = None
         self.errors: list[str] = []
         self.warnings: list[str] = []
@@ -485,12 +485,14 @@ class Submission:
             if cfmt != fmt:
                 raise StepFailed(f"chain records {cfmt} OIDs but the repository uses {fmt}")
             if not git.has_commit(parent):
-                raise StepFailed(f"canonical HEAD {parent[:10]} is not in the local repository; fetch it first")
+                raise StepFailed(f"canonical HEAD {parent[:10]} is not in the local repository; sync first "
+                                 "(dosr sync / GUI: Chain tab → Sync)")
             if parent == candidate:
                 raise StepFailed("nothing to submit: HEAD is already the canonical HEAD")
             if not git.is_ancestor(parent, candidate):
                 raise StepFailed(
-                    f"candidate does not build on canonical HEAD {parent[:10]} (stale parent); rebase and retry"
+                    f"candidate does not build on canonical HEAD {parent[:10]} (stale parent): another PR landed "
+                    "first; sync to rebase onto it (dosr sync / GUI: Chain tab → Sync), then submit again"
                 )
             n = int(git.run("rev-list", "--count", f"{parent}..{candidate}").strip())
             self.info["parent_git_oid"] = canonical_q
@@ -735,7 +737,19 @@ class Submission:
                 event = self.chain.accept_transition(response)
                 self._write("chain-event.json", event)
                 self.info["chain_event"] = event
-                s.detail = f"canonical HEAD → {event['candidate_git_oid'][:17]}… (block {event['block']})"
+                s.detail = f"canonical HEAD → {event['candidate_git_oid'][:17]}… (block {event['block']}"
+                if event.get("tx_hash"):
+                    s.detail += f" · tx {event['tx_hash'][:12]}… · {event['gas_used']:,} gas"
+                s.detail += ")"
+        except StaleParentError as e:
+            # Lost the race: another approved PR landed on the same parent first. The
+            # attestation is still valid evidence, but it can never land (its parent is
+            # no longer HEAD); sync, rebase, and submit again for a fresh review.
+            with self._lock:
+                self.outcome = "conflict"
+                self.info["chain_conflict"] = {"error": str(e), "head": e.head, "tx_hash": e.tx_hash}
+            self._skip_rest("not run (another PR landed first)")
+            return
         except Exception:
             self._skip_rest("not run (chain registration failed)")
             return  # recorded on the step; the review decision itself still stands

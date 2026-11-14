@@ -23,6 +23,7 @@ OUTCOME_STYLE = {
     "approved": ("APPROVED", "bold white on green"),
     "rejected": ("REJECTED", "bold white on red"),
     "blocked": ("BLOCKED BY CLIENT", "bold black on bright_yellow"),
+    "conflict": ("APPROVED, LOST THE RACE", "bold black on dark_orange"),
     "error": ("ERROR", "bold white on dark_red"),
     "dry-run": ("DRY RUN", "bold black on cyan"),
     "running": ("RUNNING", "bold black on yellow"),
@@ -164,8 +165,11 @@ def result_view(snap: dict, full_checks: bool = False) -> Group:
     if info.get("parent_git_oid"):
         body.add_row("Transition", f"{short(info.get('parent_git_oid'))} → {short(info.get('candidate_git_oid'))}")
     if info.get("chain_event"):
-        body.add_row("Chain", f"canonical HEAD is now {short(info['chain_event']['candidate_git_oid'])} "
-                              f"(block {info['chain_event']['block']})")
+        ev = info["chain_event"]
+        body.add_row("Chain", f"canonical HEAD is now {short(ev['candidate_git_oid'])} (block {ev['block']}"
+                              + (f", tx {ev['tx_hash']}, {ev['gas_used']:,} gas" if ev.get("tx_hash") else "") + ")")
+    if info.get("chain_conflict"):
+        body.add_row("Chain", Text(info["chain_conflict"]["error"], style="dark_orange"))
     if info.get("pr_metrics"):
         body.add_row("PR size", pr_size_text(info["pr_metrics"]))
     if info.get("prompt"):

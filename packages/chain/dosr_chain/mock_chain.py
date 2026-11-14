@@ -21,11 +21,9 @@ import time
 from pathlib import Path
 
 from dosr_protocol.canonical import canonical_json, policy_hash, sha256_0x
-from dosr_protocol.eip712 import recover_signer
+from dosr_protocol.eip712 import attestation_digest, recover_signer
 
-
-class ChainError(RuntimeError):
-    pass
+from .errors import ChainError, StaleParentError
 
 
 def default_state_path() -> Path:
@@ -36,11 +34,29 @@ def default_state_path() -> Path:
 
 
 class MockChain:
+    kind = "mock"
+    shared = False  # one file per device: devices only agree through share codes (p2p.py)
     chain_id = 31337
     contract = "0x4444444444444444444444444444444444444444"
 
     def __init__(self, state_path=None):
         self.state_path = Path(state_path) if state_path else default_state_path()
+
+    def as_account(self, private_key=None) -> "MockChain":
+        return self  # no accounts or gas in the mock
+
+    def label_accounts(self, labels: dict) -> None:
+        pass
+
+    @property
+    def location(self) -> str:
+        return str(self.state_path)
+
+    def describe(self) -> dict:
+        state = self._load()
+        return {"kind": self.kind, "shared": False, "up": True, "state_path": str(self.state_path),
+                "chain_id": self.chain_id, "contract": self.contract, "block": state["block"],
+                "repositories": len(state["repos"])}
 
     # ---------- storage ----------
 
@@ -126,9 +142,9 @@ class MockChain:
         if att.get("expires_at", 0) <= now:
             fail("attestation has expired")
         if att.get("parent_git_oid") != repo["canonical_head"]:
-            fail(
-                f"stale parent: attested parent {att.get('parent_git_oid')} != HEAD {repo['canonical_head']}"
-            )
+            raise StaleParentError(
+                f"transition rejected by contract: stale parent: attested parent {att.get('parent_git_oid')} "
+                f"!= HEAD {repo['canonical_head']}", head=repo["canonical_head"])
 
         state["block"] += 1
         event = {
@@ -138,11 +154,26 @@ class MockChain:
             "candidate_git_oid": att["candidate_git_oid"],
             "attestor": sig.get("signer"),
             "attestation_hash": sha256_0x(canonical_json(att)),
+            "attestation_digest": attestation_digest(att),
             "bundle_cid": att.get("bundle_cid"),
             "timestamp": now,
+            "seq": repo["accepted_transition_count"] + 1,
+            "chain": "mock",
         }
         repo["canonical_head"] = att["candidate_git_oid"]
         repo["accepted_transition_count"] += 1
         repo["events"].append(event)
         self._save(state)
         return event
+
+    def publish_snapshot(self, repo_id: str, head: str, cid: str) -> dict:
+        state = self._load()
+        repo = state["repos"].get(repo_id)
+        if repo is None:
+            raise ChainError("snapshot rejected: unknown repository")
+        if head != repo["canonical_head"]:
+            raise ChainError(f"snapshot rejected: {head} is not the canonical HEAD {repo['canonical_head']}")
+        state["block"] += 1
+        repo["snapshot"] = {"cid": cid, "head": head}
+        self._save(state)
+        return {"block": state["block"], "cid": cid, "head": head, "tx_hash": None}

@@ -24,6 +24,6 @@ exit /b 0
 :fail
 echo.
 echo The demo failed to start. Make sure Python 3.10+ and git are installed and on PATH,
-echo and that ports 8080, 8765, 8790, 5001 and 4001 are free.
+echo and that ports 8080, 8765, 8790, 8545, 5001 and 4001 are free.
 pause
 exit /b 1

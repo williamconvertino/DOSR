@@ -77,10 +77,30 @@ class ClientProfile:
     review_model: dict | None = None
     bundle_mode: str = "full"
     color: str | None = None
+    # Who pays gas on an EVM chain: an index into the dev chain's prefunded test accounts
+    # (dosr_chain.dev; DEV ONLY), or $DOSR_CHAIN_PRIVATE_KEY when unset.
+    chain_account: int | None = None
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        out = asdict(self)
+        out["chain_address"] = self.chain_address()
+        return out
+
+    def chain_key(self) -> str | None:
+        if self.chain_account is not None:
+            from dosr_chain.dev import dev_key
+
+            return dev_key(self.chain_account)
+        return os.environ.get("DOSR_CHAIN_PRIVATE_KEY") or None
+
+    def chain_address(self) -> str | None:
+        key = self.chain_key()
+        if not key:
+            return None
+        from eth_account import Account
+
+        return Account.from_key(key).address
 
 
 def load_profile(path) -> ClientProfile:

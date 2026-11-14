@@ -9,18 +9,21 @@ Publishing a repository puts two objects in the content store (ipfs.py):
 
 The manifest's id (an IPFS CID) is the *share code* another device imports. Nothing in
 it is trusted: on import the client checks the bundle digest, that the bundle's head is
-the claimed canonical HEAD, that its root commit is the genesis and carries the claimed
-policy, and replays every transition on the local mock chain, which verifies each
-EIP-712 signature against the attestors in the genesis policy and parent == HEAD.
+the claimed canonical HEAD, and that its root commit is the genesis and carries the
+claimed policy. What happens next depends on the chain:
 
-DEV STAND-IN FOR THE CHAIN. With a real contract, every device would read the
-canonical HEAD from the chain and only fetch Git objects over IPFS. Until then each
-device has its own mock chain, and importing a share code (1) registers the genesis on
-the importer's chain the first time (trust on first use: the share code plays the role
-of the contract address) and (2) moves its HEAD only through signature-checked
-transitions. Two devices that both advance the same HEAD fork, exactly as two
-transactions racing for the same parent would; the second import then reports a
-conflict.
+- **Shared chain (EVM).** Every device reads the same contract. The share must match
+  the genesis and policy hash the chain registered, its HEAD must be a commit the chain
+  accepted, and its signed history must be the chain's, transition for transition. The
+  chain is the trust anchor, so nothing is registered or replayed. Publishing also
+  records the share code on-chain (`publishSnapshot`), so other devices can find the Git
+  objects for the canonical HEAD from the chain alone (chain_sync.py).
+- **Per-device mock chain (dev).** Importing (1) registers the genesis on the importer's
+  chain the first time (trust on first use: the share code plays the role of the
+  contract address) and (2) replays every signed transition, which re-verifies each
+  EIP-712 signature and parent == HEAD. Two devices that both advance the same HEAD
+  fork; the second import then reports a conflict. A shared chain cannot fork like this:
+  the contract orders racing transitions and rejects every one after the first.
 """
 
 import json
@@ -36,6 +39,7 @@ from pathlib import Path
 from dosr_chain import ChainError, MockChain
 from dosr_git import GitError, GitRepo, create_bundle
 from dosr_protocol.canonical import canonical_json, policy_hash, qualify_oid, sha256_0x, unqualify_oid
+from dosr_protocol.eip712 import attestation_digest, recover_signer
 
 from .config import POLICY_FILE, REPO_FILE, ClientProfile, DosrRepo
 from .ipfs import P2PStore, StoreError, is_cid, is_local_id
@@ -82,22 +86,38 @@ def _minimal(response: dict) -> dict:
     return {"attestation": response["attestation"], "signature": response["signature"]}
 
 
-def accepted_transitions(repo: DosrRepo, onchain: dict) -> list[dict]:
-    """The signed attestor response for each transition the local chain accepted, in
-    order (genesis -> canonical HEAD). Found among this repo's own submissions and the
-    transitions it imported from other devices."""
-    known: dict[str, dict] = {}
-    for t in load_state(repo)["transitions"]:
-        known[attestation_hash(t)] = t
+def known_transitions(repo: DosrRepo) -> dict[str, dict]:
+    """Signed transitions this clone has a copy of (its own accepted submissions and those
+    imported from share manifests), keyed by EIP-712 digest and by attestation hash."""
+    responses = list(load_state(repo)["transitions"])
     for event_file in repo.submissions_dir.glob("*/chain-event.json"):
         try:
-            resp = json.loads((event_file.parent / "response.json").read_text("utf-8"))
-            known[attestation_hash(resp)] = _minimal(resp)
+            responses.append(_minimal(json.loads((event_file.parent / "response.json").read_text("utf-8"))))
         except (OSError, json.JSONDecodeError, KeyError):
             continue
+    known: dict[str, dict] = {}
+    for t in responses:
+        try:
+            known[attestation_digest(t["attestation"])] = t
+            known[attestation_hash(t)] = t
+        except (KeyError, TypeError, ValueError):
+            continue
+    return known
+
+
+def accepted_transitions(repo: DosrRepo, onchain: dict, chain=None) -> list[dict]:
+    """The signed attestor response for each transition the chain accepted, in order
+    (genesis -> canonical HEAD). Found among this clone's own submissions and imported
+    transitions; on an EVM chain, missing ones are rebuilt from the transactions' calldata."""
+    known = known_transitions(repo)
+    from_chain = None
     out = []
-    for ev in onchain.get("events", []):
-        t = known.get(ev["attestation_hash"])
+    for i, ev in enumerate(onchain.get("events", [])):
+        t = known.get(ev.get("attestation_digest") or "") or known.get(ev.get("attestation_hash") or "")
+        if not t and chain is not None and hasattr(chain, "signed_transitions"):
+            if from_chain is None:
+                from_chain = chain.signed_transitions(onchain["repo_id"])
+            t = _minimal(from_chain[i]) if i < len(from_chain) and from_chain[i] else None
         if not t:
             raise P2PError(f"no signed attestation found for accepted transition "
                            f"{ev['parent_git_oid'][:17]}… → {ev['candidate_git_oid'][:17]}… (block {ev['block']})")
@@ -109,8 +129,9 @@ def accepted_transitions(repo: DosrRepo, onchain: dict) -> list[dict]:
 
 
 def publish(repo: DosrRepo, chain: MockChain, store: P2PStore, profile: ClientProfile | None = None,
-            device: str | None = None) -> dict:
-    """Publish the canonical HEAD + its signed history; returns the share code and manifest."""
+            device: str | None = None, snapshot: bool = True) -> dict:
+    """Publish the canonical HEAD + its signed history; returns the share code and manifest.
+    On a shared chain, also records the share code on-chain as the HEAD's snapshot."""
     t0 = time.perf_counter()
     cfg, git = repo.config, repo.git
     onchain = chain.get_repository(cfg["repo_id"])
@@ -120,7 +141,7 @@ def publish(repo: DosrRepo, chain: MockChain, store: P2PStore, profile: ClientPr
     fmt, head = unqualify_oid(head_q)
     if not git.has_commit(head):
         raise P2PError(f"canonical HEAD {head[:10]} is not in the local repository")
-    transitions = accepted_transitions(repo, onchain)
+    transitions = accepted_transitions(repo, onchain, chain)
 
     backend = store.writer()
     with tempfile.TemporaryDirectory(prefix="dosr-publish-") as tmp:
@@ -153,10 +174,18 @@ def publish(repo: DosrRepo, chain: MockChain, store: P2PStore, profile: ClientPr
     record = {"share": share, "canonical_head": head_q, "bundle": bundle_id, "backend": backend.kind,
               "accepted_transitions": len(transitions), "at": manifest["published_at"],
               "by": manifest["published_by"]}
+    snap = None
+    if snapshot and chain.shared and (onchain.get("snapshot") or {}).get("cid") != share:
+        try:
+            snap = chain.publish_snapshot(cfg["repo_id"], head_q, share)
+            record["snapshot_tx"] = snap.get("tx_hash")
+        except ChainError as e:  # e.g. HEAD moved meanwhile; the bundle is still published
+            snap = {"error": str(e)}
     state["published"] = (state["published"] + [record])[-50:]
     _save_state(repo, state)
     return {
         "share": share,
+        "snapshot": snap,
         "backend": backend.kind,
         "canonical_head": head_q,
         "bundle": manifest["bundle"],
@@ -287,6 +316,48 @@ def _forget(chain: MockChain, repo_id: str) -> None:
     os.replace(tmp, chain.state_path)
 
 
+def _check_against_shared_chain(chain, git: GitRepo, m: dict, local_hex: str | None
+                                ) -> tuple[bool, str | None, list[dict], str, list[str]]:
+    """Shared chain: the chain decides what is canonical; the share only supplies Git
+    objects, and nothing is written. Returns the same tuple as _apply_to_chain."""
+    repo_id, head_q = m["repo"]["repo_id"], m["canonical_head"]
+    onchain = chain.get_repository(repo_id)
+    if not onchain:
+        raise P2PError("this repository is not registered on the chain, so the share code is not canonical "
+                       "(a shared chain never trusts a share code's genesis on first use)")
+    if onchain["policy_hash"] != m["policy_hash"] or onchain["genesis_git_oid"] != m["genesis_git_oid"]:
+        raise P2PError("the share's genesis/policy differs from what the chain registered for this repo id")
+    events = onchain.get("events", [])
+    canonical = [onchain["genesis_git_oid"]] + [ev["candidate_git_oid"] for ev in events]
+    if head_q not in canonical:
+        raise P2PError(f"the share's HEAD {head_q[:17]}… was never accepted by the chain (not canonical)")
+    pos = canonical.index(head_q)
+    # The share's signed history must be the chain's, transition for transition.
+    for i, t in enumerate(m["transitions"][:pos]):
+        att, sig = (t or {}).get("attestation") or {}, (t or {}).get("signature") or {}
+        try:
+            digest, signer = attestation_digest(att), recover_signer(att, sig.get("value") or "")
+        except Exception:
+            raise P2PError(f"transition {i + 1} in the share is malformed")
+        if digest != events[i].get("attestation_digest") or signer.lower() != (events[i].get("attestor") or "").lower():
+            raise P2PError(f"transition {i + 1} in the share does not match the one recorded on the chain")
+    notes = []
+    if head_q != onchain["canonical_head"]:
+        notes.append(f"this share is {len(canonical) - 1 - pos} transition(s) behind the chain's canonical HEAD "
+                     f"{onchain['canonical_head'][:17]}…; a newer snapshot may exist (sync)")
+    before = qualify_oid(onchain["git_object_format"], local_hex) if local_hex else None
+    _, head = unqualify_oid(head_q)
+    if local_hex == head:
+        return False, before, [], "up-to-date", notes
+    if local_hex and git.has_commit(local_hex) and git.is_ancestor(head, local_hex):
+        return False, before, [], "older", notes + ["this share code is older than your copy; nothing to apply"]
+    start = next((i for i, oid in enumerate(canonical[:pos + 1]) if unqualify_oid(oid)[1] == local_hex), 0)
+    applied = [{"parent": ev["parent_git_oid"], "candidate": ev["candidate_git_oid"], "block": ev["block"],
+                "attestor": ev["attestor"], "tx_hash": ev.get("tx_hash"), "model": None}
+               for ev in events[start:pos]]
+    return False, before, applied, "updated", notes
+
+
 def _apply_to_chain(chain: MockChain, git: GitRepo, m: dict, policy: dict, fmt: str, name: str,
                     replace: bool) -> tuple[bool, str | None, list[dict], str, list[str]]:
     """Register the genesis if needed and replay the share's signed transitions after the
@@ -396,19 +467,26 @@ def import_share(workspace, chain: MockChain, store: P2PStore, share: str, *, ex
             raise P2PError("bundle head is not the canonical HEAD the share manifest claims")
         policy = _check_history(git, m, head, fmt)
 
-        # ---- chain (dev stand-in: see module docstring). Replayed on a scratch copy of the
-        # chain first, so a share that fails half-way never leaves the real chain half-updated.
+        # ---- chain (see module docstring)
         name = m["repo"].get("name") or target.name
-        with tempfile.TemporaryDirectory(prefix="dosr-chain-") as tmp:
-            sandbox = MockChain(Path(tmp) / "state.json")
-            if chain.state_path.exists():
-                shutil.copyfile(chain.state_path, sandbox.state_path)
-            _apply_to_chain(sandbox, git, m, policy, fmt, name, replace)
-        registered, before, applied, status, notes = _apply_to_chain(chain, git, m, policy, fmt, name, replace)
+        if chain.shared:
+            registered, before, applied, status, notes = _check_against_shared_chain(chain, git, m, git.head())
+        else:
+            # Replayed on a scratch copy of the chain first, so a share that fails half-way
+            # never leaves the real chain half-updated.
+            with tempfile.TemporaryDirectory(prefix="dosr-chain-") as tmp:
+                sandbox = MockChain(Path(tmp) / "state.json")
+                if chain.state_path.exists():
+                    shutil.copyfile(chain.state_path, sandbox.state_path)
+                _apply_to_chain(sandbox, git, m, policy, fmt, name, replace)
+            registered, before, applied, status, notes = _apply_to_chain(chain, git, m, policy, fmt, name, replace)
         warnings += notes
 
-        # ---- working copy
-        now_head = chain.get_head(repo_id)
+        # ---- working copy: a shared chain moves it to the share's HEAD (canonical, maybe
+        # not the newest); a mock chain to its own HEAD, which the replay just advanced.
+        now_head = head_q if chain.shared else chain.get_head(repo_id)
+        if chain.shared and status == "older":
+            now_head = qualify_oid(fmt, git.head())
         _, now_hex = unqualify_oid(now_head)
         local = git.head()
         if status == "replaced" and local and not git.is_ancestor(local, now_hex):
@@ -476,4 +554,4 @@ def import_share(workspace, chain: MockChain, store: P2PStore, share: str, *, ex
 
 
 __all__ = ["P2PError", "StoreError", "publish", "import_share", "fetch_manifest", "parse_share_code",
-           "accepted_transitions", "load_state", "find_repo"]
+           "accepted_transitions", "known_transitions", "load_state", "find_repo"]

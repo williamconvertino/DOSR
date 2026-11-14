@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.." || exit 1
 fail() {
     echo
     echo "The demo failed to start. Make sure Python 3.10+ and git are installed,"
-    echo "and that ports 8080, 8765, 8790, 5001 and 4001 are free."
+    echo "and that ports 8080, 8765, 8790, 8545, 5001 and 4001 are free."
     read -r -p "Press Enter to close..."
     exit 1
 }

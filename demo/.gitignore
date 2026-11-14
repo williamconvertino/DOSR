@@ -1,3 +1,5 @@
 .venv/
 workspace/
 workspace-*/
+.foundry/
+.chain/
