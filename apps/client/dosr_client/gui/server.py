@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from dosr_chain import ChainError, MockChain
+from dosr_chain import ChainError, MockChain, StaleParentError
 from dosr_git import GitError
 from dosr_protocol.models import CATALOG, catalog_choices
 from dosr_protocol.policy import PRESETS, build_policy, format_model, load_preset
@@ -36,6 +36,8 @@ from dosr_protocol.templates import TemplateError, to_toml
 
 from .. import __version__
 from ..attestor import AttestorClient, AttestorError
+from ..chain_sync import SyncError, clone_from_chain, land as land_submission, record_conflict
+from ..chain_sync import sync as sync_with_chain, verify as verify_against_chain
 from ..config import (
     ClientProfile,
     ConfigError,
@@ -83,7 +85,7 @@ MAX_EDIT_BYTES = 512 * 1024
 
 class GuiState:
     def __init__(self, workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file=None,
-                 ipfs_api=None, local_store=None, p2p_mode="auto", device=None):
+                 ipfs_api=None, local_store=None, p2p_mode="auto", device=None, chain=None):
         self.keys = KeyStore(env_file)
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -97,7 +99,8 @@ class GuiState:
         self.seeds_dir = Path(seeds_dir).resolve() if seeds_dir else None
         self.profiles_dir = Path(profiles_dir).resolve() if profiles_dir else None
         self.explicit_attestor_url = attestor_url
-        self.chain = MockChain(chain_state) if chain_state else MockChain()
+        # One connection; `chain` hands it out bound to the active profile's account.
+        self._chain = chain or (MockChain(chain_state) if chain_state else MockChain())
         self.jobs: dict[str, Submission] = {}
         self.lock = threading.Lock()
 
@@ -113,9 +116,16 @@ class GuiState:
             self.profiles[p.id] = p
             self.active_profile_id = p.id
 
+        self._chain.label_accounts({p.chain_address(): p.name for p in self.profiles.values() if p.chain_address()})
+
     @property
     def profile(self) -> ClientProfile:
         return self.profiles[self.active_profile_id]
+
+    @property
+    def chain(self):
+        """The chain, sending transactions (gas) from the active profile's account."""
+        return self._chain.as_account(self.profile.chain_key())
 
     def attestor(self) -> AttestorClient:
         return AttestorClient(resolve_attestor_url(self.explicit_attestor_url, self.profile), timeout=120)
@@ -225,6 +235,16 @@ class ImportBody(BaseModel):
     adopt: bool = False  # dev: on a conflict, adopt the shared history (p2p.import_share replace=True)
 
 
+class SyncBody(BaseModel):
+    rebase: bool = True
+    timeout: float = 60
+
+
+class CloneBody(BaseModel):
+    repo_id: str
+    timeout: float = 60
+
+
 class PeerBody(BaseModel):
     url: str
 
@@ -254,6 +274,7 @@ def create_app(state: GuiState) -> FastAPI:
     @app.exception_handler(ValueError)
     @app.exception_handler(GitError)
     @app.exception_handler(ChainError)
+    @app.exception_handler(SyncError)
     async def _user_error(_, exc):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -279,7 +300,8 @@ def create_app(state: GuiState) -> FastAPI:
         return {
             "version": __version__,
             "workspace": str(state.workspace),
-            "chain_state": str(state.chain.state_path),
+            "chain_state": state.chain.location,
+            "chain_kind": state.chain.kind,
             "attestor_url": state.attestor().base_url,
             "profiles": [p.to_dict() for p in state.profiles.values()],
             "active_profile": state.active_profile_id,
@@ -580,9 +602,70 @@ def create_app(state: GuiState) -> FastAPI:
     def submission(name: str, request_id: str):
         return state.repo(name).load_submission(request_id)
 
+    # ---- chain: network, explorer, per-repo canonical state
+
     @app.get("/api/chain")
     def chain():
-        return {"state_path": str(state.chain.state_path), "repos": state.chain.list_repositories()}
+        c = state.chain
+        info = c.describe()
+        out = {"info": info, "state_path": c.location, "kind": c.kind, "repos": {}, "activity": None,
+               "profile_address": state.profile.chain_address()}
+        if not info.get("up") or (c.kind == "evm" and not info.get("deployed")):
+            return out
+        out["repos"] = c.list_repositories()
+        for r in out["repos"].values():  # which of them this device has a clone of
+            local = find_repo(state.workspace, r["repo_id"])
+            r["local_repo"] = local.name if local else None
+        return out
+
+    @app.get("/api/chain/activity")
+    def chain_activity(limit: int = 40):
+        c = state.chain
+        if c.kind != "evm":
+            return {"latest_block": c.describe().get("block"), "transactions": []}
+        return c.activity(limit=min(max(limit, 1), 200))
+
+    @app.post("/api/chain/clone")
+    def chain_clone(body: CloneBody):
+        return clone_from_chain(state.workspace, state.chain, state.store(), body.repo_id, timeout=body.timeout)
+
+    @app.get("/api/repos/{name}/chain")
+    def repo_chain(name: str):
+        repo = state.repo(name)
+        res = verify_against_chain(repo, state.chain)
+        if state.chain.kind == "evm" and res["status"] != "error":
+            try:
+                res["snapshots"] = state.chain.snapshots(repo.config["repo_id"])[::-1]
+            except ChainError:
+                res["snapshots"] = []
+        res["pending"] = [  # approved, not on the chain: can still be landed (or lost a race)
+            {"request_id": r["request_id"], "outcome": r["outcome"], "title": (r.get("info", {}).get("pr") or {}).get("title"),
+             "parent": r.get("info", {}).get("parent_git_oid"), "candidate": r.get("info", {}).get("candidate_git_oid"),
+             "conflict": r.get("info", {}).get("chain_conflict")}
+            for r in repo.list_submissions()
+            if r["outcome"] in ("approved", "conflict") and not r.get("info", {}).get("chain_event")]
+        return res
+
+    @app.post("/api/repos/{name}/sync")
+    def repo_sync(name: str, body: SyncBody):
+        return sync_with_chain(state.repo(name), state.chain, state.p2p, profile=state.profile,
+                               rebase=body.rebase, timeout=body.timeout)
+
+    @app.post("/api/repos/{name}/submissions/{request_id}/land")
+    def land(name: str, request_id: str):
+        repo = state.repo(name)
+        try:
+            event = land_submission(repo, state.chain, request_id)
+        except StaleParentError as e:
+            record_conflict(repo, request_id, e)
+            raise HTTPException(409, {"conflict": True, "error": str(e), "head": e.head, "tx_hash": e.tx_hash})
+        out = {"event": event}
+        if state.p2p is not None:
+            try:
+                out["published"] = state.publish_and_announce(repo)
+            except Exception as e:
+                out["publish_error"] = str(e)
+        return out
 
     # ---- P2P: publish / import over IPFS, peers, inbox
 
@@ -673,11 +756,12 @@ def create_app(state: GuiState) -> FastAPI:
 
 def serve(*, host="127.0.0.1", port=8765, workspace=".", seeds_dir=None, profiles_dir=None,
           profile_path=None, attestor_url=None, chain_state=None, open_browser=True, env_file=None,
-          ipfs_api=None, local_store=None, p2p_mode="auto", p2p_port=None, p2p_host="0.0.0.0", device=None):
+          ipfs_api=None, local_store=None, p2p_mode="auto", p2p_port=None, p2p_host="0.0.0.0", device=None,
+          chain=None):
     import uvicorn
 
     state = GuiState(workspace, seeds_dir, profiles_dir, profile_path, attestor_url, chain_state, env_file,
-                     ipfs_api=ipfs_api, local_store=local_store, p2p_mode=p2p_mode, device=device)
+                     ipfs_api=ipfs_api, local_store=local_store, p2p_mode=p2p_mode, device=device, chain=chain)
     app = create_app(state)
     if p2p_port and state.p2p is not None:
         serve_in_thread(create_inbox_app(state.inbox, state.peers, state.hello), p2p_host, p2p_port)
@@ -687,7 +771,7 @@ def serve(*, host="127.0.0.1", port=8765, workspace=".", seeds_dir=None, profile
     print(f"DOSR client GUI on {url}")
     print(f"  workspace : {state.workspace}")
     print(f"  attestor  : {state.attestor().base_url}")
-    print(f"  chain     : {state.chain.state_path}")
+    print(f"  chain     : {state.chain.kind} · {state.chain.location}")
     print(f"  API keys  : {state.keys.env_file or 'this session only (no --env-file)'}")
     if state.p2p is not None:
         st = state.p2p.status()

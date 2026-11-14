@@ -88,6 +88,16 @@ def typed_data(att: dict) -> dict:
     }
 
 
+def attestation_digest(att: dict) -> str:
+    """`0x` + the EIP-712 digest the attestor signs. The contract emits and stores this
+    same value per accepted transition, so it identifies a transition on-chain."""
+    from eth_account.messages import encode_typed_data
+    from eth_utils import keccak
+
+    m = encode_typed_data(full_message=typed_data(att))
+    return "0x" + keccak(b"\x19" + m.version + m.header + m.body).hex()
+
+
 def recover_signer(att: dict, signature: str) -> str:
     """Address that produced `signature` over `att` (checksummed)."""
     from eth_account import Account

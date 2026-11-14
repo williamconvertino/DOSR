@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dosr-chain"
-version = "0.1.0"
-description = "DOSR chain adapter (v0.1: file-backed mock of the repository contract)"
+version = "0.2.0"
+description = "DOSR chain adapters: the DOSRRegistry EVM contract over JSON-RPC, and a file-backed mock"
 requires-python = ">=3.10"
-dependencies = ["dosr-protocol", "eth-account>=0.11"]
+dependencies = ["dosr-protocol", "eth-account>=0.11", "eth-abi>=5", "eth-utils>=4", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 include = ["dosr_chain*"]
+
+[tool.setuptools.package-data]
+dosr_chain = ["contract/*.json"]

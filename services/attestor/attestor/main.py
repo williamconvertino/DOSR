@@ -58,6 +58,17 @@ def keys(attestor: Attestor = Depends(get_attestor)):
     return {"keys": [{"key_id": attestor.key_id, "scheme": SCHEME, "address": attestor.signer.address}]}
 
 
+@app.get("/v1/chain")
+def chain_info(attestor: Attestor = Depends(get_attestor)):
+    """Which chain this attestor reads canonical HEADs from (clients must use the same one)."""
+    chain = attestor.settings.chain()
+    try:
+        return {"kind": chain.kind, "chain_id": chain.chain_id, "contract": chain.contract,
+                "rpc_url": getattr(chain, "rpc_url", None)}
+    except Exception as e:
+        return {"kind": chain.kind, "error": str(e)}
+
+
 @app.get("/v1/repos/{repo_id}/commits/{git_oid}")
 def has_commit(
     repo_id: str = Path(pattern=r"^0x[0-9a-fA-F]{64}$"),

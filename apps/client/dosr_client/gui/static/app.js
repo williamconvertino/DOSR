@@ -27,6 +27,7 @@ const ui = {
   keysFile: null,
   armed: {},
   p2p: null,
+  chain: null,
 };
 
 async function api(path, opts = {}) {
@@ -39,8 +40,10 @@ async function api(path, opts = {}) {
   try { data = await res.json(); } catch { /* empty */ }
   if (!res.ok) {
     const d = data && data.detail;
-    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((e) => `${(e.loc || []).join(".")}: ${e.msg}`).join("; ") : `HTTP ${res.status}`;
-    throw new Error(msg);
+    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((e) => `${(e.loc || []).join(".")}: ${e.msg}`).join("; ") : d && d.error ? d.error : `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.detail = d;
+    throw err;
   }
   return data;
 }
@@ -160,7 +163,7 @@ async function refreshRepo() {
   const badges = [];
   if (!r.registered) badges.push(`<span class="badge bad">not on chain</span>`);
   else if (r.in_sync) badges.push(`<span class="badge ok">in sync with canonical HEAD</span>`);
-  else if (r.diverged) badges.push(`<span class="badge bad">diverged — rebase needed</span>`);
+  else if (r.diverged) badges.push(`<span class="badge bad" title="The canonical HEAD moved (another PR landed first) or is not fetched yet">behind the chain — sync</span>`);
   else if (r.ahead) badges.push(`<span class="badge warn">${r.ahead} commit(s) not yet accepted</span>`);
   badges.push(r.policy_hash_ok ? `<span class="badge ok">policy hash ok</span>` : `<span class="badge bad">policy hash mismatch</span>`);
   if (r.policy) badges.push(`<span class="badge">${esc(r.policy.review.prompt_template)}</span>`);
@@ -432,6 +435,7 @@ function switchTab(tab) {
   if (tab === "history") loadHistory();
   if (tab === "config") loadConfig();
   if (tab === "share") loadShare();
+  if (tab === "chain") loadRepoChain();
 }
 
 // ------------------------------------------------------------ files
@@ -589,6 +593,7 @@ function renderPipeline(job) {
 const OUTCOME_LABEL = {
   approved: "Approved", rejected: "Rejected by the attestor", blocked: "Blocked by your client — nothing was sent",
   error: "Submission failed", "dry-run": "Dry run complete",
+  conflict: "Approved, but another PR landed first",
 };
 
 function checksCard(info) {
@@ -675,7 +680,11 @@ function renderResult(job, target, repoId) {
   if (info.pr?.context_files?.length) kv.push(["Context files", info.pr.context_files.map((f) => `<code>${esc(f)}</code>`).join(" ")]);
   if (info.prompt) kv.push(["Prompt", `${fmtNum(info.prompt.words)} words · ~${fmtNum(info.prompt.est_tokens)} tokens · <code title="${esc(info.prompt.sha256)}">sha256 ${esc(info.prompt.sha256.slice(0, 18))}…</code>`]);
   if (info.forced) kv.push(["Forced", `<span class="badge warn">local validation skipped (simulated modified client)</span>`]);
-  if (info.chain_event) kv.push(["Chain", `canonical HEAD → <code>${esc(shortOid(info.chain_event.candidate_git_oid))}</code> (block ${info.chain_event.block})`]);
+  if (info.chain_event) kv.push(["Chain", chainEventHtml(info.chain_event)]);
+  if (info.chain_conflict) {
+    kv.push(["Chain", `<span class="bad-text">${esc(info.chain_conflict.error)}</span>`]);
+    kv.push(["Next", `The contract keeps one history: the PR that was mined first on this parent won. Your attestation is still valid evidence, but its parent is no longer HEAD. <button type="button" class="btn btn-small btn-primary" data-sync="1">Sync &amp; rebase onto the new HEAD</button> then submit again (the attestor reviews the rebased commit).`]);
+  }
   if (info.published) kv.push(["Shared", `share code ${shareCodeHtml(info.published.share)} <span class="muted small">${info.published.backend === "ipfs" ? "on IPFS" : "local store only (IPFS not running)"}${announcedText(info.published.announced)}</span>`]);
   const m = info.pr_metrics?.total;
   if (m) kv.push(["PR size", `${fmtNum(m.words)} words · ${fmtNum(m.chars)} chars · ~${fmtNum(m.est_tokens)} tokens <span class="muted">(est. chars/4)</span>`]);
@@ -820,10 +829,12 @@ async function loadConfig() {
         ["Limits", `${p.review.max_changed_files} files · ${p.review.max_patch_bytes} patch bytes`],
         ["Attestors", p.attestors.map((a) => `${esc(a.key_id)} <code class="small">${esc(a.address)}</code>`).join("<br>")],
         ["Storage", `${esc(p.storage.bundle_format)} via ${esc(p.storage.distribution)}`]]) : `<div class="error-box">${esc(r.policy_error || "policy unreadable")}</div>`}</div>
-      <div class="card"><h3>Mock chain record</h3>${onchain ? rows([
+      <div class="card"><h3>Chain record <span class="muted small">${esc(chain.kind === "evm" ? "DOSRRegistry contract" : "mock chain file")}</span></h3>${onchain ? rows([
         ["Canonical HEAD", `<code>${esc(onchain.canonical_head)}</code>`], ["Genesis", `<code>${esc(onchain.genesis_git_oid)}</code>`],
         ["Accepted transitions", onchain.accepted_transition_count], ["Registered at block", onchain.registered_block],
-        ["Recent events", onchain.events.slice(-5).reverse().map((e) => `block ${e.block}: <code>${esc(shortOid(e.parent_git_oid, 8))}</code> → <code>${esc(shortOid(e.candidate_git_oid, 8))}</code>`).join("<br>") || "—"]])
+        ["Registered attestors", (onchain.attestors || []).map((a) => `${esc(a.key_id)} <code class="small">${esc(a.address)}</code>`).join("<br>") || "—"],
+        ["Recent events", onchain.events.slice(-5).reverse().map((e) => `block ${e.block}: <code>${esc(shortOid(e.parent_git_oid, 8))}</code> → <code>${esc(shortOid(e.candidate_git_oid, 8))}</code>`).join("<br>") || "—"],
+        ["Details", `<button class="btn btn-small btn-ghost" onclick="switchTab('chain')">Chain tab →</button>`]])
         : `<p class="muted">Not registered.</p><button class="btn btn-small" onclick="registerRepo()">Register genesis now</button>`}</div>
       <div class="card wide"><h3>policy.json</h3><pre class="block">${esc(JSON.stringify(p, null, 2))}</pre></div>
     </div>`;
@@ -832,7 +843,7 @@ async function loadConfig() {
 async function registerRepo() {
   try {
     await api(`/api/repos/${encodeURIComponent(ui.repoId)}/register`, { method: "POST" });
-    toast("Registered on mock chain");
+    toast("Registered on the chain");
     await refreshRepo();
     loadConfig();
   } catch (e) { toast(e.message, true); }
@@ -1244,10 +1255,236 @@ async function publishRepo() {
   } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = "Publish now"; }
 }
 
-// Copy buttons anywhere (share codes, addresses).
+// ------------------------------------------------------------ chain
+
+const txHtml = (h) => (h ? `<code class="small" title="${esc(h)}">${esc(h.slice(0, 10))}…</code> <button type="button" class="btn btn-small btn-ghost" data-copy="${esc(h)}">Copy</button>` : "—");
+
+// Profile name for a dev-chain address (who submitted / paid gas).
+function who(addr) {
+  if (!addr) return "—";
+  const p = (ui.state?.profiles || []).find((x) => x.chain_address && x.chain_address.toLowerCase() === addr.toLowerCase());
+  return p ? `${esc(p.name)} <code class="small" title="${esc(addr)}">${esc(addr.slice(0, 8))}…</code>` : `<code class="small" title="${esc(addr)}">${esc(addr.slice(0, 10))}…</code>`;
+}
+
+function chainEventHtml(ev) {
+  return `canonical HEAD → <code>${esc(shortOid(ev.candidate_git_oid))}</code> (block ${ev.block}`
+    + (ev.tx_hash ? ` · tx <code class="small" title="${esc(ev.tx_hash)}">${esc(ev.tx_hash.slice(0, 10))}…</code> · ${fmtNum(ev.gas_used)} gas` : "") + ")";
+}
+
+async function pollChain() {
+  const pill = $("#chain-pill");
+  try {
+    const c = (ui.chain = await api("/api/chain"));
+    const i = c.info || {};
+    if (c.kind === "mock") {
+      pill.className = "pill pill-btn pill-local";
+      $("#chain-text").textContent = "mock chain";
+      pill.title = `Mock chain (a JSON file on this device, not shared): ${c.state_path}\nStart the demo with the EVM chain to share one canonical state.`;
+    } else if (!i.up || !i.deployed) {
+      pill.className = "pill pill-btn pill-down";
+      $("#chain-text").textContent = i.up ? "no contract" : "chain down";
+      pill.title = i.error || `no DOSR contract at ${i.contract}`;
+    } else {
+      pill.className = "pill pill-btn pill-up";
+      $("#chain-text").textContent = `EVM · block ${i.block}`;
+      pill.title = `${i.rpc_url} · chain ${i.chain_id}\nDOSRRegistry ${i.contract}\nClick to explore repositories and transactions`;
+    }
+    if (!$("#chain-modal").hidden) renderChain(false);
+    // Another device landed a PR: refresh this repo's view.
+    const on = ui.repo && c.repos[ui.repo.repo_id];
+    if (on && on.canonical_head !== ui.repo.canonical_head) {
+      await refreshRepo();
+      if (ui.tab === "chain") loadRepoChain();
+      toast(`${ui.repo.name}: the canonical HEAD moved on the chain (block ${on.head_block ?? "?"})`);
+    }
+    $("#chain-tab-badge").textContent = ui.repo && ui.repo.registered && ui.repo.diverged ? "!" : "";
+  } catch {
+    pill.className = "pill pill-btn pill-down";
+    $("#chain-text").textContent = "chain ?";
+  }
+}
+
+async function openChain() {
+  $("#chain-modal").hidden = false;
+  await renderChain(true);
+}
+
+function closeChain() { $("#chain-modal").hidden = true; }
+
+let chainRendering = false;
+async function renderChain(force) {
+  if (chainRendering || (!force && !$("#chain-live").checked)) return;
+  chainRendering = true;
+  try {
+    const c = ui.chain || (ui.chain = await api("/api/chain"));
+    const i = c.info || {};
+    const rows = [];
+    if (c.kind === "evm") {
+      const me = activeProfile();
+      rows.push(["Network", `Local EVM dev chain <span class="muted small">${esc(i.client || "")}</span>`]);
+      rows.push(["RPC", `<code>${esc(i.rpc_url)}</code>`]);
+      rows.push(["Chain ID", esc(i.chain_id ?? "?")]);
+      rows.push(["Contract", `<code>${esc(i.contract)}</code> ` + (i.deployed
+        ? (i.code_matches_source ? `<span class="badge ok">code = contracts/src/DOSRRegistry.sol</span>` : `<span class="badge warn">code differs from this build</span>`)
+        : `<span class="badge bad">no code at this address</span>`)]);
+      rows.push(["Latest block", esc(i.block ?? "?")]);
+      rows.push(["You", `${esc(me?.name || "?")} sends from <code class="small">${esc(i.account)}</code> · ${i.balance_wei != null ? (i.balance_wei / 1e18).toFixed(4) : "?"} ETH <span class="muted small">(prefunded dev account: no real money)</span>`]);
+      if (i.error) rows.push(["Error", `<span class="bad-text">${esc(i.error)}</span>`]);
+    } else {
+      rows.push(["Network", `Mock chain <span class="muted small">a JSON file on this device that enforces the contract's checks; not shared with other devices</span>`]);
+      rows.push(["State file", `<code class="small">${esc(c.state_path)}</code>`]);
+      rows.push(["Block", esc(i.block ?? 0)]);
+    }
+    $("#chain-net").innerHTML = `<dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+
+    const repos = Object.values(c.repos || {});
+    $("#chain-repos").innerHTML = repos.length ? `<table class="mini chain-table"><thead><tr><th>Name</th><th>Repo ID</th><th>Canonical HEAD</th><th class="num">PRs</th><th>Registered</th><th>Snapshot (Git objects)</th><th></th></tr></thead><tbody>
+      ${repos.map((r) => `<tr><td><strong>${esc(r.name)}</strong></td>
+        <td><code class="small" title="${esc(r.repo_id)}">${esc(r.repo_id.slice(0, 12))}…</code></td>
+        <td><code>${esc(shortOid(r.canonical_head, 10))}</code></td>
+        <td class="num">${r.accepted_transition_count}</td>
+        <td class="small">block ${esc(r.registered_block)}${r.creator ? " · " + who(r.creator) : ""}</td>
+        <td class="small">${r.snapshot ? `<code title="${esc(r.snapshot.cid)}">${esc(r.snapshot.cid.slice(0, 14))}…</code> ${r.snapshot.head === r.canonical_head ? '<span class="badge ok">current</span>' : '<span class="badge warn">older HEAD</span>'}` : '<span class="muted">none published</span>'}</td>
+        <td>${r.local_repo ? `<button type="button" class="btn btn-small" data-open="${esc(r.local_repo)}">Open</button>`
+          : r.snapshot ? `<button type="button" class="btn btn-small btn-primary" data-clone="${esc(r.repo_id)}">Clone</button>` : ""}</td></tr>`).join("")}
+      </tbody></table>` : `<p class="muted small">No repositories registered yet. <em>+ New</em> creates one and registers its genesis here.</p>`;
+    $("#chain-repos").querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { closeChain(); selectRepo(b.dataset.open); }));
+    $("#chain-repos").querySelectorAll("[data-clone]").forEach((b) => (b.onclick = () => cloneFromChain(b.dataset.clone, b)));
+
+    if (c.kind !== "evm" || !i.deployed) {
+      $("#chain-activity").innerHTML = `<p class="muted small">${c.kind === "evm" ? "The contract is not deployed." : "The mock chain keeps no transactions; run the demo on the EVM chain to see them."}</p>`;
+      return;
+    }
+    const a = await api("/api/chain/activity?limit=40");
+    const names = Object.fromEntries(repos.map((r) => [r.repo_id, r.name]));
+    $("#chain-activity").innerHTML = a.transactions.length ? `<table class="mini chain-table"><thead><tr><th class="num">Block</th><th>When</th><th>From</th><th>Call</th><th>Result</th><th class="num">Gas</th><th>Tx</th></tr></thead><tbody>
+      ${a.transactions.map((t) => {
+        const repo = t.args?.repo_id ? names[t.args.repo_id] : null;
+        const evs = t.events.map((e) => e.name === "TransitionAccepted" ? `HEAD #${e.seq}` : e.name.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()).join(", ");
+        const result = t.status === "success" ? `<span class="ok-text">✓ ${esc(evs || "ok")}</span>`
+          : `<span class="badge bad" title="${esc(t.error?.message || "reverted")}">reverted${t.error ? ": " + esc(t.error.name) : ""}</span>${t.error?.name === "StaleParent" ? '<div class="muted small">lost the race: its parent was no longer HEAD</div>' : ""}`;
+        return `<tr class="${t.status === "success" ? "" : "failed"}"><td class="num">${t.block}</td><td class="small">${ago(t.timestamp)}</td>
+          <td class="small">${esc(t.from_label || "")} <code class="small" title="${esc(t.from)}">${esc(t.from.slice(0, 8))}…</code></td>
+          <td><code>${esc(t.function || "?")}</code>${repo ? ` <span class="muted small">${esc(repo)}</span>` : ""}<div class="small">${esc(t.summary)}</div></td>
+          <td>${result}</td><td class="num">${fmtNum(t.gas_used)}</td>
+          <td><code class="small" title="${esc(t.hash)}">${esc(t.hash.slice(0, 10))}…</code></td></tr>`;
+      }).join("")}</tbody></table>` : `<p class="muted small">No transactions yet.</p>`;
+  } catch (e) {
+    $("#chain-activity").innerHTML = `<div class="error-box">${esc(e.message)}</div>`;
+  } finally {
+    chainRendering = false;
+  }
+}
+
+async function cloneFromChain(repoId, btn) {
+  btn.disabled = true;
+  btn.textContent = "Cloning…";
+  try {
+    const r = await api("/api/chain/clone", { method: "POST", body: { repo_id: repoId } });
+    toast(`Cloned ${r.name} at ${shortOid(r.canonical_head)} from its on-chain snapshot`);
+    closeChain();
+    await loadState();
+    await selectRepo(r.id);
+  } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = "Clone"; }
+}
+
+const REL_BANNER = {
+  "in-sync": ["ok", "Your copy is at the canonical HEAD recorded on the chain."],
+  ahead: ["ok", "Your local commits build on the canonical HEAD. Submit them; once approved they land on the chain."],
+  behind: ["warn", "The chain has moved on: newer PRs were accepted. Sync to fast-forward."],
+  diverged: ["bad", "Another approved PR landed first. Your local commits no longer build on the canonical HEAD: sync to fetch it and rebase them, then submit again."],
+  invalid: ["bad", "This clone does NOT match what the chain records (see the failed checks)."],
+  "not-registered": ["bad", "The chain has no record of this repository."],
+  error: ["bad", "Could not read the chain."],
+};
+
+async function loadRepoChain(note) {
+  const el = $("#repo-chain-view");
+  if (!el.innerHTML) el.innerHTML = `<p class="muted small">Reading the chain…</p>`;
+  let v;
+  try {
+    v = await api(`/api/repos/${encodeURIComponent(ui.repoId)}/chain`);
+  } catch (e) { el.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; return; }
+  const rel = v.relation || {};
+  const [tone, text] = REL_BANNER[v.status] || ["warn", v.status];
+  const canSync = ["behind", "diverged"].includes(v.status) || (v.checks || []).some((c) => c.fix === "sync");
+  const mark = (ok) => (ok === true ? `<span class="ok-text">✓</span>` : ok === false ? `<span class="bad-text">✗</span>` : `<span class="muted">?</span>`);
+  const checks = (v.checks || []).map((c) => `<tr class="${c.ok === false ? "failed" : ""}"><td><code>${esc(c.name)}</code></td><td class="c">${mark(c.ok)}</td><td class="small">${esc(c.detail)}</td></tr>`).join("");
+  const hist = (v.history || []).slice().reverse().map((h) => `<tr>
+      <td class="num">${h.seq}</td>
+      <td><code title="${esc(h.oid)}">${esc(shortOid(h.oid, 10))}</code>${h.oid === v.canonical_head ? ' <span class="badge ok">HEAD</span>' : ""}${rel.local_head && h.oid.endsWith(rel.local_head) ? ' <span class="badge">your main</span>' : ""}</td>
+      <td class="small">${h.kind === "genesis" ? "genesis (registered)" : esc(h.model || "")}${h.attestor_key_id ? ` · <code class="small">${esc(h.attestor_key_id)}</code>` : ""}</td>
+      <td class="c">${h.kind === "genesis" ? "" : mark(h.signature_ok)}</td>
+      <td class="num">${h.block ?? ""}</td>
+      <td class="small">${h.kind === "genesis" ? "" : who(h.submitter)}</td>
+      <td class="small">${h.tx_hash ? `<code title="${esc(h.tx_hash)}">${esc(h.tx_hash.slice(0, 10))}…</code>` : ""}</td>
+      <td class="c">${h.local ? mark(true) : '<span class="bad-text" title="not in your local repository">missing</span>'}</td></tr>`).join("");
+  const pending = (v.pending || []).map((p) => `<div class="inbox-item ${p.conflict ? "" : "new"}">
+      <div class="what"><strong>${esc(p.title || p.request_id)}</strong> <code>${esc(shortOid(p.parent, 8))}</code> → <code>${esc(shortOid(p.candidate, 8))}</code>
+        <div class="muted small">${p.conflict ? `<span class="bad-text">lost the race:</span> ${esc(p.conflict.error)}` : p.parent === v.canonical_head ? "approved by the attestor, not yet on the chain; its parent is still HEAD, so it can land" : `approved, but built on <code>${esc(shortOid(p.parent, 8))}</code>, which is no longer HEAD: landing it will revert (StaleParent)`}</div></div>
+      <div class="acts">${p.conflict ? "" : `<button type="button" class="btn btn-small btn-primary" data-land="${esc(p.request_id)}">Land on chain</button>`}</div></div>`).join("");
+  const snaps = (v.snapshots || []).slice(0, 8).map((s) => `<tr><td class="num">${s.block}</td><td><code>${esc(shortOid(s.head, 10))}</code></td><td><code class="small" title="${esc(s.cid)}">${esc(s.cid.slice(0, 24))}…</code></td><td class="small">${who(s.publisher)}</td></tr>`).join("");
+  el.innerHTML = `
+    ${note || ""}
+    <div class="decision chain-banner ${tone}">
+      <div><h2>${esc(v.status)}</h2><p>${text}</p>
+        <div class="small">Canonical HEAD <code>${esc(shortOid(v.canonical_head))}</code> · your main <code>${esc(shortOid(rel.local_head ? "x:" + rel.local_head : null))}</code>${rel.ahead ? ` · ${rel.ahead} ahead` : ""}${rel.behind ? ` · ${rel.behind} behind` : ""} · verified in ${fmtMs(v.took_ms)}</div></div>
+      <div class="acts">
+        ${canSync ? `<button type="button" class="btn btn-primary" id="sync-btn">${v.status === "diverged" ? "Sync &amp; rebase" : "Sync"}</button>` : ""}
+        ${v.status === "not-registered" ? `<button type="button" class="btn btn-primary" onclick="registerRepo()">Register genesis</button>` : ""}
+        <button type="button" class="btn btn-small" onclick="loadRepoChain()">Re-verify</button>
+      </div>
+    </div>
+    <div class="result-cards">
+      <div class="card"><h3>Is my copy the canonical one?</h3>
+        <p class="muted small">Checked against the chain alone: the genesis and policy hash it registered, the attestor keys it trusts, every accepted transition (signature re-verified from the transaction's calldata), and where your branch stands.</p>
+        <table class="mini checks-table"><tbody>${checks}</tbody></table></div>
+      <div class="card"><h3>Approved, waiting to land</h3>${pending || '<p class="muted small">None. (Untick <em>Register approval on chain</em> when submitting to keep an approval here; two approvals on the same parent then race: the first to land wins.)</p>'}</div>
+      <div class="card wide"><h3>Canonical history on the chain <span class="muted small">newest first</span></h3>
+        <table class="mini chain-table"><thead><tr><th class="num">#</th><th>Commit</th><th>Reviewed by</th><th class="c">Sig</th><th class="num">Block</th><th>Submitted by</th><th>Tx</th><th class="c">Local</th></tr></thead><tbody>${hist}</tbody></table></div>
+      ${v.snapshots ? `<div class="card wide"><h3>Snapshots <span class="muted small">where to fetch the Git objects for a canonical HEAD (share codes recorded on-chain)</span></h3>${snaps ? `<table class="mini"><thead><tr><th class="num">Block</th><th>HEAD</th><th>Share code</th><th>Published by</th></tr></thead><tbody>${snaps}</tbody></table>` : '<p class="muted small">None yet.</p>'}</div>` : ""}
+    </div>`;
+  if ($("#sync-btn")) $("#sync-btn").onclick = () => syncRepo($("#sync-btn"));
+  el.querySelectorAll("[data-land]").forEach((b) => (b.onclick = () => landSubmission(b.dataset.land, b)));
+}
+
+async function syncRepo(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(ui.repoId)}/sync`, { method: "POST", body: { rebase: true } });
+    const note = `<div class="decision approved"><h2>Synced with the chain</h2><ul class="steps-list">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
+      ${r.rebased ? `<p class="small">Rebased <code>${esc(r.rebased.old_head.slice(0, 10))}</code> → <code>${esc(r.rebased.new_head.slice(0, 10))}</code>. Submit again: the attestor must review the rebased commit, because the old approval named a parent that is no longer HEAD.</p>` : ""}</div>
+      ${r.warnings.length ? `<div class="warn-box"><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}`;
+    toast(r.steps[r.steps.length - 1] || "Synced");
+    await Promise.all([refreshRepo(), loadState()]);
+    if (ui.tab !== "chain") switchTab("chain");
+    await loadRepoChain(note);
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Sync"; }
+    $("#repo-chain-view").insertAdjacentHTML("afterbegin", `<div class="error-box"><strong>Sync failed.</strong> ${esc(e.message)}</div>`);
+  }
+}
+
+async function landSubmission(id, btn) {
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(ui.repoId)}/submissions/${encodeURIComponent(id)}/land`, { method: "POST" });
+    toast(`Landed: canonical HEAD → ${shortOid(r.event.candidate_git_oid)} (block ${r.event.block})`);
+  } catch (e) {
+    toast(e.detail?.conflict ? `Lost the race: ${e.message}` : e.message, true);
+  }
+  await Promise.all([refreshRepo(), loadState()]);
+  loadRepoChain();
+}
+
+// Copy buttons anywhere (share codes, addresses); "Sync & rebase" from a conflict result.
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
   if (b) copyText(b.dataset.copy);
+  const s = e.target.closest("[data-sync]");
+  if (s) { switchTab("chain"); syncRepo(s); }
 });
 
 // ------------------------------------------------------------ wiring
@@ -1257,6 +1494,8 @@ function wire() {
   $("#new-repo-btn").onclick = openNewRepo;
   $("#import-btn").onclick = () => openP2P("import");
   $("#p2p-pill").onclick = () => openP2P();
+  $("#chain-pill").onclick = () => openChain();
+  $("#chain-modal").addEventListener("click", (e) => { if (e.target.id === "chain-modal") closeChain(); });
   $("#p2p-modal").addEventListener("click", (e) => { if (e.target.id === "p2p-modal") closeP2P(); });
   $("#nr-preset").onchange = () => { updatePresetPreview(); setModelRows(presetModelSpecs()); };
   $("#nr-seed").onchange = onSeedChange;
@@ -1293,6 +1532,7 @@ function wire() {
       renderAvatar();
       toast(`Now acting as ${activeProfile().name}`);
       pollAttestor();
+      pollChain();
       if (ui.repoId) refreshRepo();
     } catch (err) { toast(err.message, true); }
   };
@@ -1319,6 +1559,7 @@ function wire() {
     if ((e.ctrlKey || e.metaKey) && e.key === "s" && ui.tab === "editor") { e.preventDefault(); saveFile(); }
     if (e.key === "Escape") {
       if (!$("#tpl-modal").hidden) closeTemplateEditor();
+      else if (!$("#chain-modal").hidden) closeChain();
       else if (!$("#p2p-modal").hidden) closeP2P();
       else closeModal();
     }
@@ -1334,6 +1575,8 @@ function wire() {
   } catch (e) { toast(e.message, true); }
   pollAttestor();
   pollP2P();
+  pollChain();
   setInterval(pollAttestor, 5000);
   setInterval(pollP2P, 5000);
+  setInterval(pollChain, 2000);
 })();

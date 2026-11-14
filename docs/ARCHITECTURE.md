@@ -39,3 +39,27 @@ Use EIP-712 with at least:
 ## Git OIDs on-chain
 
 For protocol v0.1, record the repository Git object format at genesis. If using SHA-1, represent the 20-byte Git OID in a fixed 32-byte field by zero-padding and verify the exact conversion in shared protocol code. Do not hash the IPFS CID and treat it as the canonical commit identifier; Git OID remains canonical.
+
+## Canonical state and conflicts (implemented)
+
+The chain (`contracts/src/DOSRRegistry.sol`) is the single source of truth for which
+commit is canonical. Clients and attestors read it; only approved, correctly signed
+transitions whose parent is the current HEAD change it.
+
+- **Registration:** genesis commit, policy hash and the policy's attestor keys are stored
+  once and never change.
+- **Racing PRs:** the attestor can approve two PRs built on the same HEAD. The first
+  transaction mined moves HEAD; the other reverts with `StaleParent`, even inside the same
+  block. The losing client syncs, rebases and resubmits; its new commit is reviewed again.
+- **Data availability:** after landing, the client publishes a Git bundle of HEAD to IPFS
+  and records its CID on-chain (`publishSnapshot`). Any client can then clone or sync from
+  the chain alone; the bundle is checked against the on-chain genesis, policy hash and
+  history before use.
+- **Verification:** `dosr verify` / the GUI's Chain tab checks a clone against the chain:
+  genesis, policy hash, registered attestors vs the policy, a linear history whose every
+  signed attestation (rebuilt from transaction calldata) recovers to a registered
+  attestor and matches the stored digest, and whether the local branch is in sync,
+  ahead, behind or diverged.
+
+The per-device mock chain (`MockChain`) remains for tests and offline use; with it,
+devices agree only through share codes (trust on first use) and can fork.

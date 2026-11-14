@@ -11,6 +11,7 @@ Global options (before the subcommand):
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -24,13 +25,15 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from dosr_chain import ChainError, MockChain
+from dosr_chain import ChainError, StaleParentError, connect
 from dosr_git import GitError
 from dosr_protocol.policy import PRESETS, PolicyError, build_policy, format_model
 from dosr_protocol.pr_format import TEMPLATES, PRFormatError
 
 from . import __version__
 from .attestor import AttestorClient, AttestorError
+from .chain_sync import SyncError, clone_from_chain, land as land_submission, record_conflict
+from .chain_sync import sync as sync_with_chain, verify as verify_against_chain
 from .config import (
     ConfigError,
     DosrRepo,
@@ -65,9 +68,18 @@ err = Console(stderr=True, highlight=False)
 # ---------------------------------------------------------------- helpers
 
 
+def _chain(args, profile=None):
+    kind = args.chain or ("mock" if args.chain_state else None)
+    chain = connect(kind, rpc_url=args.rpc_url, contract=args.contract, state_path=args.chain_state)
+    # Name senders in `dosr chain --activity` after the profiles that own them.
+    known = profiles_in_dir(os.environ.get("DOSR_PROFILES_DIR")) + ([profile] if profile else [])
+    chain.label_accounts({p.chain_address(): p.name for p in known if p.chain_address()})
+    return chain.as_account(profile.chain_key()) if profile else chain
+
+
 def _ctx(args):
     profile = resolve_profile(args.profile)
-    chain = MockChain(args.chain_state) if args.chain_state else MockChain()
+    chain = _chain(args, profile)
     attestor = AttestorClient(resolve_attestor_url(args.attestor_url, profile))
     return profile, chain, attestor
 
@@ -313,7 +325,12 @@ def cmd_submit(args):
         if args.show_prompt and (Path(snap["artifacts_dir"]) / "prompt.txt").exists():
             console.print(Panel((Path(snap["artifacts_dir"]) / "prompt.txt").read_text("utf-8"),
                                 title="Prompt sent to the attestor", border_style="dim"))
-    return {"approved": 0, "dry-run": 0, "rejected": 2, "blocked": 3}.get(snap["outcome"], 1)
+    conflict = snap.get("info", {}).get("chain_conflict")
+    if conflict and not args.json:
+        console.print(f"[bold yellow]Lost the race:[/] another approved PR landed on the same parent first; "
+                      f"canonical HEAD is now [bold]{short(conflict['head'])}[/].\n"
+                      "Run [bold]dosr sync[/] (fetches it and rebases your commits), then [bold]dosr submit[/] again.")
+    return {"approved": 0, "dry-run": 0, "rejected": 2, "blocked": 3, "conflict": 4}.get(snap["outcome"], 1)
 
 
 def cmd_history(args):
@@ -387,18 +404,140 @@ def cmd_register(args):
 
 def cmd_chain(args):
     _, chain, _ = _ctx(args)
+    if args.deploy:
+        from dosr_chain import ensure_deployed
+
+        if chain.kind != "evm":
+            raise ChainError("--deploy needs an EVM chain (--chain evm / --rpc-url)")
+        dep = ensure_deployed(chain.rpc_url, chain.contract)
+        console.print(f"[green]✓[/] DOSRRegistry {'deployed' if dep['deployed'] else 'already deployed'} at "
+                      f"[bold]{dep['contract']}[/]")
+    info = chain.describe()
+    if chain.kind == "evm":
+        rows = [("RPC", info["rpc_url"]), ("Chain ID", str(info.get("chain_id", "?"))),
+                ("Contract", info["contract"] + ("" if info.get("deployed") else "  (no code! run dosr chain --deploy)")),
+                ("Code", "matches contracts/src/DOSRRegistry.sol" if info.get("code_matches_source") else
+                 Text("differs from this build", style="yellow")),
+                ("Latest block", str(info.get("block", "?"))), ("Node", info.get("client", "?")),
+                ("Your account", f"{info['account']}  ({info.get('balance_wei', 0) / 1e18:,.4f} ETH, dev funds)")]
+        if info.get("error"):
+            rows.append(("Error", Text(info["error"], style="red")))
+        console.print(Panel(_kv_table(rows), title="[bold]EVM chain", border_style="magenta"))
+        if not info.get("up") or not info.get("deployed"):
+            return 1
+    else:
+        console.print(f"[dim]Mock chain state: {chain.location}[/]")
     repos = chain.list_repositories()
-    console.print(f"[dim]Mock chain state: {chain.state_path}[/]")
     if not repos:
         console.print("[dim]No repositories registered.[/]")
         return
-    t = Table(box=box.SIMPLE_HEAD)
-    for col in ("Name", "Repo ID", "Canonical HEAD", "Accepted", "Policy hash"):
+    t = Table(box=box.SIMPLE_HEAD, title="Repositories on the chain", title_justify="left")
+    for col in ("Name", "Repo ID", "Canonical HEAD", "Accepted", "Policy hash", "Snapshot"):
         t.add_column(col, overflow="fold")
     for r in repos.values():
+        snap = r.get("snapshot")
         t.add_row(r["name"], r["repo_id"][:18] + "…", short(r["canonical_head"]),
-                  str(r["accepted_transition_count"]), r["policy_hash"][:18] + "…")
+                  str(r["accepted_transition_count"]), r["policy_hash"][:18] + "…",
+                  (snap["cid"][:16] + "…" + (" (current)" if snap["head"] == r["canonical_head"] else " (older)"))
+                  if snap else "—")
     console.print(t)
+    if chain.kind == "evm" and args.activity:
+        act = chain.activity(limit=args.activity)
+        t = Table(box=box.SIMPLE_HEAD, title=f"Recent DOSR transactions (latest block {act['latest_block']})",
+                  title_justify="left")
+        for col in ("Block", "Tx", "From", "Call", "Status", "Gas"):
+            t.add_column(col, overflow="fold")
+        for tx in act["transactions"]:
+            status = Text("ok", style="green") if tx["status"] == "success" else \
+                Text("REVERTED " + ((tx.get("error") or {}).get("name") or ""), style="bold red")
+            t.add_row(str(tx["block"]), tx["hash"][:12] + "…", tx["from_label"] or tx["from"][:12] + "…",
+                      tx["summary"], status, f"{tx['gas_used']:,}")
+        console.print(t)
+
+
+def _verify_table(res: dict) -> Table:
+    t = Table(box=box.SIMPLE_HEAD, title=f"{res['repo']} vs the chain ({res['chain']})", title_justify="left")
+    t.add_column("Check", no_wrap=True)
+    t.add_column("")
+    t.add_column("Detail", overflow="fold")
+    for c in res["checks"]:
+        mark = Text("✓", style="green") if c["ok"] else Text("?", style="yellow") if c["ok"] is None else \
+            Text("✗", style="bold red")
+        t.add_row(c["name"], mark, c["detail"])
+    return t
+
+
+def cmd_verify(args):
+    _, chain, _ = _ctx(args)
+    res = verify_against_chain(_repo(args), chain)
+    console.print(_verify_table(res))
+    rows = []
+    for h in res["history"]:
+        where = f"block {h['block']}" if h.get("block") is not None else ""
+        sig = {True: "[green]sig ✓[/]", False: "[red]sig ✗[/]", None: "[dim]sig ?[/]"}[h.get("signature_ok")] \
+            if h["kind"] == "transition" else "[dim]genesis[/]"
+        local = "" if h["local"] else "  [yellow](not in local repo)[/]"
+        rows.append(f"  {h['seq']:>3}  {short(h['oid'])}  {where:<10} {sig}  {h.get('model') or ''}{local}")
+    if rows:
+        console.print("[bold]Canonical history on the chain[/]")
+        for r in rows:
+            console.print(r)
+    color = {"in-sync": "green", "ahead": "green", "behind": "yellow", "diverged": "yellow"}.get(res["status"], "red")
+    console.print(f"Status: [bold {color}]{res['status']}[/]" +
+                  ("  → run [bold]dosr sync[/]" if res["status"] in ("behind", "diverged") else ""))
+    return 0 if res["status"] in ("in-sync", "ahead") else 1
+
+
+def cmd_sync(args):
+    profile, chain, _ = _ctx(args)
+    repo = _repo(args)
+    store = _store(args) or P2PStore(mode="auto")
+    with console.status("Reading the canonical HEAD from the chain…"):
+        res = sync_with_chain(repo, chain, store, profile=profile, rebase=not args.no_rebase, timeout=args.timeout)
+    for s in res["steps"]:
+        console.print(f"[green]✓[/] {s}")
+    for w in res["warnings"]:
+        console.print(f"[yellow]warning:[/] {w}")
+    console.print(_verify_table(res["verify"]))
+    console.print(f"Canonical HEAD [bold]{short(res['canonical_head'])}[/] · local HEAD {short(res['local_head'])} · "
+                  f"status [bold]{res['status']}[/]")
+    return 0 if res["status"] in ("in-sync", "ahead") else 1
+
+
+def cmd_land(args):
+    _, chain, _ = _ctx(args)
+    repo = _repo(args)
+    rid = args.request_id
+    if not rid:
+        cand = [r for r in repo.list_submissions() if r["outcome"] == "approved" and not r.get("info", {}).get("chain_event")]
+        if not cand:
+            raise ConfigError("no approved submission waiting to land (submit with --no-register first)")
+        rid = cand[0]["request_id"]
+    try:
+        ev = land_submission(repo, chain, rid)
+    except StaleParentError as e:
+        record_conflict(repo, rid, e)
+        console.print(f"[bold red]Lost the race:[/] {e}\nRun [bold]dosr sync[/], then submit again.")
+        return 4
+    console.print(f"[green]✓[/] landed {rid}: canonical HEAD → [bold]{short(ev['candidate_git_oid'])}[/] "
+                  f"(block {ev['block']}" + (f", tx {ev['tx_hash']}" if ev.get("tx_hash") else "") + ")")
+
+
+def cmd_clone(args):
+    _, chain, _ = _ctx(args)
+    store = _store(args) or P2PStore(mode="auto")
+    repo_id = args.repo_id
+    if not repo_id.startswith("0x"):
+        matches = [r for r in chain.list_repositories().values() if r["name"] == repo_id]
+        if not matches:
+            raise ConfigError(f"no repository named {repo_id!r} on the chain")
+        repo_id = matches[0]["repo_id"]
+    with console.status("Fetching the snapshot the chain points at…"):
+        res = clone_from_chain(Path(args.workspace or "."), chain, store, repo_id, timeout=args.timeout)
+    console.print(f"[green]✓[/] {res['action']} {res['name']} at {short(res['canonical_head'])} into {res['path']} "
+                  f"(snapshot {res['snapshot']['cid']})")
+    for w in res["warnings"]:
+        console.print(f"[yellow]warning:[/] {w}")
 
 
 def cmd_profiles(args):
@@ -605,7 +744,7 @@ def cmd_gui(args):
         profiles_dir=args.profiles,
         profile_path=args.profile,
         attestor_url=args.attestor_url,
-        chain_state=args.chain_state,
+        chain=_chain(args),
         open_browser=not args.no_browser,
         env_file=args.env_file,
         ipfs_api=args.ipfs_api,
@@ -626,7 +765,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-C", "--repo", help="repository path (default: search upward from cwd)")
     p.add_argument("--profile", help="client profile JSON (default: $DOSR_PROFILE or git identity)")
     p.add_argument("--attestor-url", help="attestor base URL")
-    p.add_argument("--chain-state", help="mock chain state file")
+    p.add_argument("--chain", choices=["evm", "mock"],
+                   help="evm: the DOSRRegistry contract over JSON-RPC (shared by everyone); mock: a local JSON file "
+                        "(default: $DOSR_CHAIN, else evm if an RPC URL is set, else mock)")
+    p.add_argument("--rpc-url", help="EVM JSON-RPC URL (default: $DOSR_RPC_URL or http://127.0.0.1:8545)")
+    p.add_argument("--contract", help="DOSRRegistry address (default: $DOSR_CONTRACT or the dev deployment address)")
+    p.add_argument("--chain-state", help="mock chain state file (implies --chain mock)")
     p.add_argument("--ipfs-api", help="IPFS (Kubo) RPC API URL (default: $DOSR_IPFS_API or http://127.0.0.1:5001)")
     p.add_argument("--local-store", help="fallback content store directory when IPFS is not running "
                                          "(default: $DOSR_LOCAL_STORE or ~/.dosr/local-store)")
@@ -703,7 +847,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("server", help="check attestor health and keys").set_defaults(func=cmd_server)
     sub.add_parser("register", help="register an existing repo's genesis on the chain").set_defaults(func=cmd_register)
-    sub.add_parser("chain", help="show the mock chain state").set_defaults(func=cmd_chain)
+    s = sub.add_parser("chain", help="show the chain: network, registered repositories, recent transactions")
+    s.add_argument("--activity", type=int, nargs="?", const=15, default=0, metavar="N",
+                   help="also list the last N DOSR transactions (EVM; default 15)")
+    s.add_argument("--deploy", action="store_true", help="deploy the contract if there is no code at the address")
+    s.set_defaults(func=cmd_chain)
+
+    sub.add_parser("verify", help="check this clone against the chain (genesis, policy, attestors, signed history, "
+                                  "local branch)").set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("sync", help="move to the chain's canonical HEAD: fetch its snapshot, fast-forward, rebase "
+                                    "unaccepted local commits")
+    s.add_argument("--no-rebase", action="store_true", help="fail instead of rebasing diverged local commits")
+    s.add_argument("--timeout", type=float, default=60, help="seconds to wait for IPFS")
+    s.set_defaults(func=cmd_sync)
+
+    s = sub.add_parser("land", help="submit a saved approved attestation (reviewed with --no-register) to the chain")
+    s.add_argument("request_id", nargs="?", help="default: the newest approved submission not on the chain")
+    s.set_defaults(func=cmd_land)
+
+    s = sub.add_parser("clone", help="clone a repository registered on the chain, from its on-chain snapshot")
+    s.add_argument("repo_id", help="repo id (0x…) or name")
+    s.add_argument("--workspace", help="directory to clone into (default: cwd)")
+    s.add_argument("--timeout", type=float, default=60)
+    s.set_defaults(func=cmd_clone)
 
     s = sub.add_parser("publish", help="publish the canonical HEAD + signed history to IPFS; prints a share code")
     s.add_argument("--announce", action="append", metavar="PEER_URL",
@@ -777,7 +944,7 @@ def main(argv=None) -> int:
     try:
         return args.func(args) or 0
     except (ConfigError, PolicyError, PRFormatError, TemplateError, ChainError, AttestorError, GitError,
-            FileNotFoundError, P2PError, StoreError, ValueError) as e:
+            FileNotFoundError, P2PError, StoreError, SyncError, ValueError) as e:
         err.print(f"[bold red]error:[/] {e}")
         return 1
     except KeyboardInterrupt:

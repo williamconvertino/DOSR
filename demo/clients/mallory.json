@@ -2,6 +2,11 @@
   "name": "Mallory",
   "email": "mallory@dosr.demo",
   "description": "Adversarial: asks for an unapproved model. Her client blocks it; with Force send (a modified client) the attestor rejects it",
-  "review_model": { "provider": "mock", "model": "always-approve", "version": "1" },
-  "color": "#c92a2a"
+  "review_model": {
+    "provider": "mock",
+    "model": "always-approve",
+    "version": "1"
+  },
+  "color": "#c92a2a",
+  "chain_account": 5
 }

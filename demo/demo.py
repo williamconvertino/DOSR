@@ -2,17 +2,22 @@
 
     python demo/demo.py attestor        start the attestor (foreground)
     python demo/demo.py gui             start the client GUI on the demo workspace
-    python demo/demo.py up              IPFS + attestor in the background + GUI (one terminal)
+    python demo/demo.py up              chain + IPFS + attestor in the background + GUI (one terminal)
     python demo/demo.py run             scripted end-to-end CLI demo (several fake clients)
-    python demo/demo.py reset           delete demo/workspace (repos + mock chain)
+    python demo/demo.py reset           delete demo/workspace and reset the dev chain
+    python demo/demo.py chain           run the EVM dev chain (anvil + DOSRRegistry); the
+                                        other commands start it for you; `chain install|status|reset`
     python demo/demo.py ipfs install    download IPFS (Kubo) into demo/.ipfs (once)
     python demo/demo.py ipfs            run the IPFS node (foreground); `up` starts it for you
     python demo/demo.py pair            two clients on this computer (devices a + b), already peered
 
+Every device uses the same chain (anvil on :8545, or $DOSR_RPC_URL). `--chain mock` (before
+the command) uses a JSON-file mock chain per device instead.
+
 `--device b` (before the command) runs a second, separate device on the same computer:
-its own workspace (demo/workspace-b), mock chain, attestor (:8081), GUI (:8766), peer
-inbox (:8791) and IPFS node (API :5002, swarm :4002). Use it to try P2P sharing without a
-second computer; `pair` starts devices a and b together.
+its own workspace (demo/workspace-b), attestor (:8081), GUI (:8766), peer inbox (:8791) and
+IPFS node (API :5002, swarm :4002). Use it to try P2P sharing without a second computer;
+`pair` starts devices a and b together.
 """
 
 import argparse
@@ -43,6 +48,15 @@ IPFS_DIR = DEMO / ".ipfs"
 LOCAL_STORE = IPFS_DIR / "local-store"  # fallback store when no IPFS node runs (shared by local devices)
 KUBO_VERSION = "v0.43.1"
 IPFS_API = "http://127.0.0.1:5001"  # device a's node (the default everywhere else, e.g. IPFS Desktop)
+
+# Dev chain: one anvil node + the DOSRRegistry contract, shared by every device (unlike the
+# per-device mock chain files). Binary in demo/.foundry (git-ignored), state in demo/.chain.
+FOUNDRY_DIR = DEMO / ".foundry"
+FOUNDRY_VERSION = "v1.9.0"
+CHAIN_DIR = DEMO / ".chain"
+ANVIL_STATE = CHAIN_DIR / "anvil-state.json"
+CHAIN_RPC = os.environ.get("DOSR_RPC_URL", "http://127.0.0.1:8545")
+CHAIN_KIND = "evm"  # --chain mock: per-device JSON files instead (no anvil)
 
 
 class Device:
@@ -112,10 +126,53 @@ def attestor_up(port: int) -> bool:
 
 
 def attestor_env(device: Device | None = None) -> dict:
-    # The attestor reads canonical HEAD / policy hashes from the same mock chain as the clients.
+    # The attestor reads canonical HEAD / policy hashes from the same chain as the clients:
+    # the shared EVM chain, or (--chain mock) this device's mock chain file.
     device = device or DEVICE
-    return {**os.environ, "DOSR_CHAIN_STATE": str(device.chain_state),
-            "ATTESTOR_CACHE_DIR": str(device.workspace / ".attestor-cache")}
+    env = {k: v for k, v in os.environ.items() if k not in ("DOSR_CHAIN_STATE", "DOSR_CHAIN", "DOSR_RPC_URL")}
+    env.update(chain_env() if CHAIN_KIND == "evm" else {"DOSR_CHAIN_STATE": str(device.chain_state)})
+    env["ATTESTOR_CACHE_DIR"] = str(device.workspace / ".attestor-cache")
+    return env
+
+
+def chain_argv(device: Device | None = None) -> list[str]:
+    """dosr CLI flags for this device's chain."""
+    if CHAIN_KIND == "evm":
+        e = chain_env()
+        return ["--chain", "evm", "--rpc-url", e["DOSR_RPC_URL"], "--contract", e["DOSR_CONTRACT"]]
+    return ["--chain-state", str((device or DEVICE).chain_state)]
+
+
+def ensure_chain(procs: list | None = None) -> None:
+    """Bring up the shared dev chain (or fall back to per-device mock chains)."""
+    global CHAIN_KIND
+    if CHAIN_KIND != "evm":
+        print("Chain: per-device mock chain files (--chain mock).")
+        return
+    try:
+        proc = start_chain_process()
+    except (SystemExit, Exception) as e:
+        CHAIN_KIND = "mock"
+        print(f"WARNING: the EVM dev chain is unavailable ({e}).\n         Falling back to per-device mock chain "
+              "files; run `demo.py chain install` to get anvil.")
+        return
+    if proc and procs is not None:
+        procs.append(proc)
+
+
+def attestor_chain_problem(port: int) -> str | None:
+    """Why an already-running attestor cannot serve this demo's chain (None if it can)."""
+    import httpx
+
+    try:
+        info = httpx.get(attestor_url(port) + "/v1/chain", timeout=3).json()
+    except (httpx.HTTPError, ValueError):
+        return "it does not report its chain (an older attestor?)"
+    if info.get("kind") != CHAIN_KIND:
+        return f"it reads the {info.get('kind')} chain, this demo uses {CHAIN_KIND}"
+    if CHAIN_KIND == "evm" and (info.get("contract") or "").lower() != chain_env()["DOSR_CONTRACT"].lower():
+        return f"it reads contract {info.get('contract')}"
+    return None
 
 
 def start_attestor_process(port: int, device: Device | None = None) -> subprocess.Popen:
@@ -268,19 +325,182 @@ def cmd_ipfs(args):
     return subprocess.call([str(binary), "daemon"], env=_ipfs_env(DEVICE))
 
 
+# ---------------------------------------------------------------- dev chain (anvil + DOSRRegistry)
+
+
+def anvil_binary() -> Path | None:
+    local = FOUNDRY_DIR / "bin" / ("anvil.exe" if sys.platform == "win32" else "anvil")
+    if local.exists():
+        return local
+    found = shutil.which("anvil")
+    return Path(found) if found else None
+
+
+def chain_up(url: str | None = None) -> bool:
+    import httpx
+
+    try:
+        r = httpx.post(url or CHAIN_RPC, json={"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
+                       timeout=httpx.Timeout(2, connect=0.5))
+        return r.status_code == 200 and "result" in r.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+def _foundry_asset() -> str:
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
+    if sys.platform == "win32":
+        return f"foundry_{FOUNDRY_VERSION}_win32_{arch}.zip"
+    osname = "darwin" if sys.platform == "darwin" else "linux"
+    return f"foundry_{FOUNDRY_VERSION}_{osname}_{arch}.tar.gz"
+
+
+def anvil_install(force: bool = False) -> Path:
+    """Download the official Foundry release from GitHub, check its sha256, unpack anvil to demo/.foundry/bin."""
+    import httpx
+
+    existing = anvil_binary()
+    if existing and not force:
+        print(f"anvil already available: {existing}")
+        return existing
+    asset = _foundry_asset()
+    base = f"https://github.com/foundry-rs/foundry/releases/download/{FOUNDRY_VERSION}/{asset}"
+    print(f"Downloading {base} ...")
+    data = httpx.get(base, follow_redirects=True, timeout=300).raise_for_status().content
+    sums = base.rsplit(".", 2 if asset.endswith(".tar.gz") else 1)[0] + ".sha256"
+    expected = httpx.get(sums, follow_redirects=True, timeout=60).raise_for_status().text.split()[0]
+    if hashlib.sha256(data).hexdigest() != expected.lower():
+        raise SystemExit("downloaded Foundry archive does not match its published sha256; not installing")
+    name = "anvil.exe" if sys.platform == "win32" else "anvil"
+    if asset.endswith(".zip"):
+        member = zipfile.ZipFile(io.BytesIO(data)).read(name)
+    else:
+        member = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz").extractfile(name).read()
+    out = FOUNDRY_DIR / "bin" / name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(member)
+    out.chmod(0o755)
+    print(f"Installed anvil (Foundry {FOUNDRY_VERSION}) at {out}")
+    return out
+
+
+def start_chain_process(install: bool = True, host: str = "127.0.0.1") -> subprocess.Popen | None:
+    """Start the local dev chain (anvil) unless one answers at CHAIN_RPC, then make sure the
+    DOSR contract is deployed. State persists in demo/.chain/anvil-state.json across restarts.
+    Returns the process if this call started it. Raises SystemExit if no chain is available."""
+    proc = None
+    if chain_up():
+        print(f"Using the dev chain already running at {CHAIN_RPC}")
+    else:
+        binary = anvil_binary()
+        if not binary and install:
+            print("anvil (local Ethereum dev chain) is not installed yet; downloading Foundry once (~60 MB)...")
+            binary = anvil_install()
+        if not binary:
+            raise SystemExit("anvil is not available: run `demo.py chain install`, or use --chain mock")
+        CHAIN_DIR.mkdir(parents=True, exist_ok=True)
+        port = CHAIN_RPC.rsplit(":", 1)[1]
+        # Instant mining; state dumped every second so a hard stop (Windows) keeps it.
+        argv = [str(binary), "--host", host, "--port", port, "--chain-id", "31337", "--accounts", "10",
+                "--state", str(ANVIL_STATE), "--state-interval", "1", "--silent"]
+        log_path = CHAIN_DIR / "anvil.log"
+        print(f"Starting the dev chain (anvil) on {CHAIN_RPC} ...")
+        proc = subprocess.Popen(argv, stdout=open(log_path, "ab"), stderr=subprocess.STDOUT)
+        proc.is_chain = True
+        for _ in range(120):
+            if chain_up():
+                break
+            if proc.poll() is not None:
+                raise SystemExit(f"anvil exited (code {proc.returncode}); see {log_path}. Is port {port} in use?")
+            time.sleep(0.25)
+        else:
+            proc.terminate()
+            raise SystemExit("anvil did not answer within 30 s")
+    from dosr_chain import ensure_deployed
+
+    dep = ensure_deployed(CHAIN_RPC)
+    if dep["deployed"]:
+        print(f"Deployed DOSRRegistry at {dep['contract']} (block {dep['block']})")
+    else:
+        print(f"DOSRRegistry at {dep['contract']}")
+    os.environ["DOSR_CONTRACT"] = dep["contract"]
+    return proc
+
+
+def stop_procs(procs) -> None:
+    """Stop background processes, newest first. anvil saves its state once a second and a
+    stop on Windows is a hard kill, so give it a moment to write the latest state first."""
+    if any(getattr(p, "is_chain", False) and p.poll() is None for p in procs):
+        time.sleep(1.5)
+    for proc in reversed(procs):
+        if proc.poll() is None:
+            proc.terminate()
+
+
+def chain_env() -> dict:
+    """How every client/attestor process reaches the chain (shared by all devices)."""
+    if CHAIN_KIND == "mock":
+        return {"DOSR_CHAIN": "mock"}
+    from dosr_chain.dev import DEV_CONTRACT_ADDRESS
+
+    return {"DOSR_CHAIN": "evm", "DOSR_RPC_URL": CHAIN_RPC,
+            "DOSR_CONTRACT": os.environ.get("DOSR_CONTRACT") or DEV_CONTRACT_ADDRESS}
+
+
+def cmd_chain(args):
+    if args.action == "install":
+        anvil_install(force=args.force)
+        return 0
+    if args.action == "status":
+        from dosr_chain import connect
+
+        print(f"anvil  : {anvil_binary() or 'not installed (demo.py chain install)'}")
+        print(f"RPC    : {CHAIN_RPC} ({'up' if chain_up() else 'not running'})")
+        print(f"state  : {ANVIL_STATE}")
+        if chain_up():
+            info = connect("evm", rpc_url=CHAIN_RPC, contract=chain_env()["DOSR_CONTRACT"]).describe()
+            for k in ("chain_id", "block", "contract", "deployed", "code_matches_source", "repositories"):
+                print(f"{k:<7}: {info.get(k)}")
+        return 0
+    if args.action == "reset":
+        if chain_up():
+            print("Stop the running dev chain first (close the window running it).")
+            return 1
+        if ANVIL_STATE.exists():
+            ANVIL_STATE.unlink()
+            print(f"Deleted {ANVIL_STATE}")
+        return 0
+    # start (foreground)
+    proc = start_chain_process(host=args.host)
+    if not proc:
+        return 0
+    print("Dev chain running; Ctrl+C to stop.")
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 0
+
+
 # ---------------------------------------------------------------- commands
 
 
 def cmd_attestor(args):
+    procs = []
+    ensure_chain(procs)
     print(f"Starting DOSR attestor on {attestor_url(args.port)} (docs: {attestor_url(args.port)}/docs)")
-    return subprocess.call(
-        [sys.executable, "-m", "uvicorn", "attestor.main:app", "--port", str(args.port)], cwd=ATTESTOR_DIR,
-        env=attestor_env(),
-    )
+    try:
+        return subprocess.call(
+            [sys.executable, "-m", "uvicorn", "attestor.main:app", "--port", str(args.port)], cwd=ATTESTOR_DIR,
+            env=attestor_env(),
+        )
+    finally:
+        stop_procs(procs)
 
 
 def _gui_argv(args):
-    argv = ["--chain-state", str(CHAIN_STATE), "--attestor-url", attestor_url(args.attestor_port),
+    argv = [*chain_argv(), "--attestor-url", attestor_url(args.attestor_port),
             "--ipfs-api", DEVICE.ipfs_api, "--local-store", str(LOCAL_STORE), "gui",
             "--workspace", str(WORKSPACE), "--seeds", str(PROJECTS), "--profiles", str(CLIENTS),
             "--port", str(args.port), "--env-file", str(ROOT / ".env"), "--device", args.device_name]
@@ -297,21 +517,29 @@ def cmd_gui(args):
     from dosr_client.cli import main as dosr
 
     WORKSPACE.mkdir(parents=True, exist_ok=True)
+    procs = []
+    ensure_chain(procs)
     if not attestor_up(args.attestor_port):
         print(f"note: no attestor at {attestor_url(args.attestor_port)} yet; start it with `demo.py attestor`")
-    return dosr(_gui_argv(args))
+    try:
+        return dosr(_gui_argv(args))
+    finally:
+        stop_procs(procs)
 
 
 def cmd_up(args):
     from dosr_client.cli import main as dosr
 
     procs = []
+    ensure_chain(procs)
     if not args.no_ipfs:
         ipfs = start_ipfs_process(DEVICE)
         if ipfs:
             procs.append(ipfs)
     if attestor_up(args.attestor_port):
         print(f"Using already-running attestor at {attestor_url(args.attestor_port)}")
+        if problem := attestor_chain_problem(args.attestor_port):
+            print(f"WARNING: that attestor follows a different chain ({problem}); stop it and run this again.")
     else:
         print(f"Starting attestor on {attestor_url(args.attestor_port)}...")
         procs.append(start_attestor_process(args.attestor_port))
@@ -319,13 +547,12 @@ def cmd_up(args):
     try:
         return dosr(_gui_argv(args))
     finally:
-        for proc in procs:
-            proc.terminate()
+        stop_procs(procs)
 
 
 def cmd_pair(args):
-    """Two clients on this computer (devices a and b), each with its own workspace, mock
-    chain, attestor and IPFS node, already peered with each other, one browser tab each."""
+    """Two clients on this computer (devices a and b), each with its own workspace,
+    attestor and IPFS node, on one shared chain, already peered, one browser tab each."""
     import httpx
     import webbrowser
 
@@ -335,11 +562,11 @@ def cmd_pair(args):
     procs: list[subprocess.Popen] = []
 
     def stop_all():
-        for proc in reversed(procs):
-            if proc.poll() is None:
-                proc.terminate()
+        stop_procs(procs)
 
     try:
+        # One chain for both laptops: they agree on every canonical HEAD through it.
+        ensure_chain(procs)
         for dev in devices:
             dev.workspace.mkdir(parents=True, exist_ok=True)
             if not args.no_ipfs:
@@ -348,12 +575,14 @@ def cmd_pair(args):
                     procs.append(node)
             if attestor_up(dev.attestor_port):
                 print(f"Using already-running attestor at {attestor_url(dev.attestor_port)}")
+                if problem := attestor_chain_problem(dev.attestor_port):
+                    print(f"WARNING: that attestor follows a different chain ({problem}); stop it and retry.")
             else:
                 print(f"Starting attestor for device {dev.name} on {attestor_url(dev.attestor_port)}...")
                 procs.append(start_attestor_process(dev.attestor_port, dev))
             # Peer inbox on loopback only: both clients are on this computer (no firewall prompt).
-            procs.append(subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--device", dev.name, "gui",
-                                           "--no-browser", "--p2p-host", "127.0.0.1",
+            procs.append(subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--device", dev.name,
+                                           "--chain", CHAIN_KIND, "gui", "--no-browser", "--p2p-host", "127.0.0.1",
                                            "--name", f"Laptop {dev.name.upper()}"]))
         guis = [httpx.Client(base_url=f"http://127.0.0.1:{d.gui_port}", timeout=30) for d in devices]
         for dev, gui in zip(devices, guis):
@@ -388,8 +617,9 @@ def cmd_pair(args):
         print("Two DOSR clients are running on this computer:")
         for dev in devices:
             print(f"  Laptop {dev.name.upper()}: http://127.0.0.1:{dev.gui_port}/   workspace {dev.workspace}")
-        print("Create a repo on Laptop A; it shows up in Laptop B's inbox (P2P button, top right). "
-              "Ctrl+C or close this window to stop both.")
+        print("Create a repo on Laptop A; it shows up in Laptop B's inbox (P2P button, top right)"
+              + (" and on the shared chain (chain button: Clone)" if CHAIN_KIND == "evm" else "")
+              + ". Ctrl+C or close this window to stop both.")
         if not args.no_browser and not os.environ.get("DOSR_NO_BROWSER"):
             for dev in devices:
                 webbrowser.open(f"http://127.0.0.1:{dev.gui_port}/")
@@ -403,12 +633,36 @@ def cmd_pair(args):
         stop_all()
 
 
+def reset_chain() -> None:
+    """Wipe the shared dev chain: back to an empty genesis with a fresh contract (same
+    address), or delete its saved state if it is not running."""
+    if chain_up():
+        import httpx
+
+        httpx.post(CHAIN_RPC, json={"jsonrpc": "2.0", "id": 1, "method": "anvil_reset", "params": []},
+                   timeout=10).raise_for_status()
+        from dosr_chain import ensure_deployed
+
+        dep = ensure_deployed(CHAIN_RPC)
+        print(f"Reset the dev chain at {CHAIN_RPC}; DOSRRegistry redeployed at {dep['contract']}")
+    elif ANVIL_STATE.exists():
+        ANVIL_STATE.unlink()
+        print(f"Deleted {ANVIL_STATE}")
+
+
 def cmd_reset(args):
     if WORKSPACE.exists():
         remove_workspace(DEVICE)
         print(f"Deleted {WORKSPACE}")
     else:
-        print("Nothing to reset.")
+        print("No workspace to delete.")
+    # The EVM chain is shared by every simulated device; device a owns resetting it.
+    if DEVICE.name == "a" and not args.keep_chain and CHAIN_KIND == "evm":
+        reset_chain()
+        # Other simulated devices' clones point at repositories that no longer exist on the chain.
+        for other in sorted(DEMO.glob("workspace-?")):
+            remove_workspace(Device(other.name[-1]))
+            print(f"Deleted {other} (its repositories were on the chain that was just reset)")
     return 0
 
 
@@ -445,7 +699,10 @@ def cmd_run(args):
     from dosr_git import GitRepo
 
     console = Console(highlight=False)
+    procs: list[subprocess.Popen] = []
+    ensure_chain(procs)
     if args.reset:
+        args.keep_chain = False
         cmd_reset(args)
     WORKSPACE.mkdir(parents=True, exist_ok=True)
 
@@ -457,6 +714,10 @@ def cmd_run(args):
             return 1
         console.print(f"Starting attestor on {attestor_url(args.attestor_port)}...")
         proc = start_attestor_process(args.attestor_port)
+    elif problem := attestor_chain_problem(args.attestor_port):
+        console.print(f"[red]The attestor at {attestor_url(args.attestor_port)} follows a different chain:[/] {problem}. "
+                      "Stop it and re-run with --start-attestor.")
+        return 1
 
     for name in ("calculator-py", "todo-js", "secure-vault"):
         if (WORKSPACE / name).exists():
@@ -464,7 +725,7 @@ def cmd_run(args):
             return 1
 
     store = ["--ipfs-api", IPFS_API, "--local-store", str(LOCAL_STORE)]
-    base = ["--chain-state", str(CHAIN_STATE), "--attestor-url", attestor_url(args.attestor_port), *store]
+    base = [*chain_argv(), "--attestor-url", attestor_url(args.attestor_port), *store]
     results = []
     llm = pick_llm_model()
 
@@ -649,14 +910,17 @@ def cmd_run(args):
             record(f"Mallory: eval() backdoor via {llm.split('/')[0]}", "Mallory", ch["expect"], "calculator-py")
             drop_last_commit("calculator-py")
 
-        # 10. P2P: share over IPFS with a second device -------------------------------------------
+        # 10+. a second device; with the EVM chain, a race between two approved PRs ------------------
         if not args.no_p2p:
-            results.extend(p2p_scenario(args, console, scenario, dosr, store, as_client))
+            if CHAIN_KIND == "evm":
+                results.extend(shared_chain_scenario(args, console, scenario, dosr, store, as_client))
+            else:
+                results.extend(p2p_scenario(args, console, scenario, dosr, store, as_client))
 
         # Summary ---------------------------------------------------------------------------------
         console.print()
         console.print(Rule("[bold]Summary"))
-        as_client("alice", "chain")
+        as_client("alice", "chain", *(["--activity", "12"] if CHAIN_KIND == "evm" else []))
         t = Table(title="Scenario outcomes  (blocked = stopped by the client before sending; "
                         "rejected = signed rejection from the attestor)")
         for col in ("Scenario", "Client", "Expected", "Actual", "Total time"):
@@ -673,6 +937,162 @@ def cmd_run(args):
     finally:
         if proc:
             proc.terminate()
+        stop_procs(procs)
+
+
+def _latest_run(repo_path: Path) -> dict | None:
+    import json
+
+    runs = sorted((repo_path / ".git" / "dosr" / "submissions").glob("*/run.json"), key=lambda p: p.stat().st_mtime)
+    return json.loads(runs[-1].read_text("utf-8")) if runs else None
+
+
+def shared_chain_scenario(args, console, scenario, dosr, store, as_client):
+    """EVM chain: device B (demo/workspace-b, its own attestor) clones calculator-py from the
+    chain alone; Bob (device A) and Carol (device B) both get an approved PR on the same
+    parent and send them in the same block; the contract accepts one and reverts the other;
+    the loser syncs, rebases, and lands; both devices verify they hold the one canonical HEAD."""
+    import json
+
+    from rich.rule import Rule
+
+    from dosr_chain import StaleParentError, connect
+    from dosr_client.chain_sync import record_conflict, record_landed
+    from dosr_client.config import DosrRepo, load_profile
+
+    dev_b = Device("b")
+    out = []
+    if dev_b.workspace.exists():
+        remove_workspace(dev_b)
+    dev_b.workspace.mkdir(parents=True, exist_ok=True)
+    repo_a, repo_b = WORKSPACE / "calculator-py", dev_b.workspace / "calculator-py"
+    b_base = [*chain_argv(), "--attestor-url", attestor_url(dev_b.attestor_port), *store]
+
+    def as_b(client, *argv, repo=True):
+        full = [*b_base, "--profile", str(CLIENTS / f"{client}.json")]
+        if repo:
+            full += ["-C", str(repo_b)]
+        return dosr([*full, *argv])
+
+    scenario("10. A second device clones from the chain", "Carol on device B",
+             "Alice publishes calculator-py: a git bundle of the canonical HEAD goes to "
+             + ("IPFS" if ipfs_up() else "the local store (no IPFS node running)")
+             + " and its share code is recorded on the chain (publishSnapshot). Device B has its own workspace "
+             f"and attestor (:{dev_b.attestor_port}) but the same chain. `dosr clone calculator-py` finds the repo "
+             "and its snapshot on the chain, fetches the bundle, and checks it against the genesis, policy hash "
+             "and signed history the chain holds. No share code is passed between the devices.")
+    proc_b = None
+    if not attestor_up(dev_b.attestor_port):
+        proc_b = start_attestor_process(dev_b.attestor_port, dev_b)
+    try:
+        as_client("alice", "publish", repo="calculator-py")
+        console.print(Rule("[cyan]device B[/]: dosr clone calculator-py", style="dim"))
+        rc = as_b("carol", "clone", "calculator-py", "--workspace", str(dev_b.workspace), repo=False)
+        out.append(("Device B: clone from the chain", "Carol", "cloned", "cloned" if rc == 0 else "error", None))
+        if rc:
+            return out
+
+        # 11. the race ------------------------------------------------------------------------
+        scenario("11. Two approved PRs race for the same parent", "Bob (device A) vs Carol (device B)",
+                 "Both start from the same canonical HEAD and each gets an APPROVED attestation from their own "
+                 "attestor (submitted with --no-register, so nothing lands yet). Both attestations are valid, but "
+                 "the contract only accepts a transition whose parent is the current HEAD. We send both "
+                 "transactions into the SAME block: the chain orders them, the first moves HEAD, and the second "
+                 "reverts with StaleParent. Every node that reads the chain sees the same single winner.")
+        with open(repo_a / "README.md", "a", encoding="utf-8") as f:
+            f.write("\n## Usage\n\n```python\nfrom calculator import power\nprint(power(2, 10))  # 1024\n```\n")
+        as_client("bob", "submit", "-m", "Document usage in the README", "--no-register", repo="calculator-py")
+        run_bob = _latest_run(repo_a)
+        out.append(("Bob: PR on HEAD, not landed yet", "Bob", "approved", run_bob["outcome"], run_bob["elapsed_ms"]))
+        (repo_b / "CHANGELOG.md").write_text("# Changelog\n\n- power() and modulo()\n- Usage docs\n", encoding="utf-8")
+        as_b("carol", "submit", "-m", "Add a changelog", "--no-register")
+        run_carol = _latest_run(repo_b)
+        out.append(("Carol: PR on the same HEAD, not landed", "Carol", "approved", run_carol["outcome"],
+                    run_carol["elapsed_ms"]))
+        if run_bob["outcome"] != "approved" or run_carol["outcome"] != "approved":
+            return out
+
+        e = chain_env()
+        racers = [("Bob", repo_a, run_bob, "bob"), ("Carol", repo_b, run_carol, "carol")]
+        chains = {name: connect("evm", rpc_url=e["DOSR_RPC_URL"], contract=e["DOSR_CONTRACT"],
+                                private_key=load_profile(CLIENTS / f"{pid}.json").chain_key())
+                  for name, _, _, pid in racers}
+        responses = {name: json.loads((Path(run["artifacts_dir"]) / "response.json").read_text("utf-8"))
+                     for name, _, run, _ in racers}
+        miner = chains["Bob"]
+        console.print(Rule("[magenta]chain[/]: automine off → send both acceptTransition txs → mine one block",
+                           style="dim"))
+        miner.set_automine(False)
+        try:
+            txs = {name: chains[name].send_transition(responses[name]) for name, _, _, _ in racers}
+            for name, tx in txs.items():
+                console.print(f"  sent {name}'s transition: tx {tx}")
+            miner.mine()
+        finally:
+            miner.set_automine(True)
+        winner = loser = None
+        for name, repo_path, run, _ in racers:
+            try:
+                ev = chains[name].transition_result(txs[name], responses[name])
+                record_landed(DosrRepo(repo_path), run["request_id"], ev)
+                winner = (name, repo_path, run)
+                console.print(f"  [green]✓ {name}[/] landed in block {ev['block']}: canonical HEAD → "
+                              f"{ev['candidate_git_oid'][:17]}… ({ev['gas_used']:,} gas)")
+            except StaleParentError as err:
+                record_conflict(DosrRepo(repo_path), run["request_id"], err)
+                loser = (name, repo_path, run)
+                console.print(f"  [bold red]✗ {name}[/] reverted in the same block: {err}")
+        out.append(("Race: both in one block", "Bob vs Carol", "1 landed, 1 StaleParent",
+                    "1 landed, 1 StaleParent" if winner and loser else "unexpected", None))
+        if not (winner and loser):
+            return out
+
+        # 12. the loser recovers --------------------------------------------------------------
+        w_name, w_repo, _ = winner
+        l_name, l_repo, _ = loser
+        on_a = w_repo == repo_a
+
+        def run_on(repo_path, client, *argv):
+            if repo_path == repo_a:
+                return as_client(client, *argv, repo="calculator-py")
+            return as_b(client, *argv)
+
+        w_client, l_client = ("bob", "carol") if on_a else ("carol", "bob")
+        scenario(f"12. {l_name} lost: sync, rebase, resubmit", l_name,
+                 f"{w_name} publishes the new HEAD (snapshot on the chain). {l_name}'s client reads the chain: the "
+                 "canonical HEAD is a commit it does not have, so `dosr sync` fetches the snapshot the chain points "
+                 f"at, verifies it, and rebases {l_name}'s commit onto it. The old approval named the old parent, so "
+                 "it can never land; the rebased commit is reviewed again and lands on top.")
+        run_on(w_repo, w_client, "publish")
+        run_on(l_repo, l_client, "verify")
+        rc = run_on(l_repo, l_client, "sync")
+        out.append((f"{l_name}: sync + rebase onto {w_name}'s HEAD", l_name, "synced",
+                    "synced" if rc == 0 else "error", None))
+        run_on(l_repo, l_client, "submit")
+        run = _latest_run(l_repo)
+        out.append((f"{l_name}: resubmit rebased PR", l_name, "approved", run["outcome"], run["elapsed_ms"]))
+
+        # 13. everyone agrees ----------------------------------------------------------------
+        scenario("13. Both devices hold the one canonical state", "Bob and Carol",
+                 f"{w_name}'s device syncs (fast-forward to {l_name}'s commit from the snapshot on the chain); then "
+                 "each device verifies its clone against the chain alone.")
+        run_on(w_repo, w_client, "sync")
+        rc_a = as_client("bob", "verify", repo="calculator-py")
+        rc_b = as_b("carol", "verify")
+        heads = [_git_head(repo_a), _git_head(repo_b)]
+        same = heads[0] == heads[1] and rc_a == 0 and rc_b == 0
+        out.append(("Devices A and B: same verified HEAD", "Bob, Carol", "agree",
+                    "agree" if same else f"differ ({heads[0][:10]} vs {heads[1][:10]})", None))
+    finally:
+        if proc_b:
+            proc_b.terminate()
+    return out
+
+
+def _git_head(path: Path) -> str:
+    from dosr_git import GitRepo
+
+    return GitRepo(path).head() or ""
 
 
 def p2p_scenario(args, console, scenario, dosr, store, as_client):
@@ -746,6 +1166,9 @@ def main():
     ap.add_argument("--device", default="a",
                     help="which simulated device: a (default) or b, c, ... (own workspace, chain, ports)")
     ap.add_argument("--attestor-port", type=int, help="default: 8080 for device a, 8081 for b, ...")
+    ap.add_argument("--chain", choices=["evm", "mock"], default=os.environ.get("DOSR_CHAIN", "evm"),
+                    help="evm (default): one local anvil chain running the DOSRRegistry contract, shared by every "
+                         "device; mock: a JSON file per device (no anvil)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("attestor", help="run the attestor in the foreground")
@@ -785,10 +1208,21 @@ def main():
     s.add_argument("--force", action="store_true", help="install: re-download even if present")
     s.set_defaults(func=cmd_ipfs)
 
-    sub.add_parser("reset", help="delete this device's workspace").set_defaults(func=cmd_reset)
+    s = sub.add_parser("chain", help="EVM dev chain (anvil + DOSRRegistry): start (default) | install | status | reset")
+    s.add_argument("action", nargs="?", choices=["start", "install", "status", "reset"], default="start")
+    s.add_argument("--force", action="store_true", help="install: re-download even if present")
+    s.add_argument("--host", default="127.0.0.1",
+                   help="start: interface to listen on; 0.0.0.0 lets other computers use this chain")
+    s.set_defaults(func=cmd_chain)
+
+    s = sub.add_parser("reset", help="delete this device's workspace (device a: and reset the shared chain)")
+    s.add_argument("--keep-chain", action="store_true", help="keep the EVM chain's state")
+    s.set_defaults(func=cmd_reset)
 
     args = ap.parse_args()
-    global DEVICE, WORKSPACE, CHAIN_STATE
+    global DEVICE, WORKSPACE, CHAIN_STATE, CHAIN_KIND
+    CHAIN_KIND = args.chain
+    os.environ.setdefault("DOSR_PROFILES_DIR", str(CLIENTS))  # names dev accounts in `dosr chain --activity`
     DEVICE = Device(args.device)
     WORKSPACE, CHAIN_STATE = DEVICE.workspace, DEVICE.chain_state
     if args.attestor_port is None:
@@ -802,7 +1236,7 @@ def main():
         args.device_name = socket.gethostname() if DEVICE.name == "a" else f"{socket.gethostname()}-{DEVICE.name}"
     if args.cmd == "attestor":
         args.attestor_port = args.port
-    if args.cmd not in ("reset", "ipfs"):
+    if args.cmd not in ("ipfs",) and not (args.cmd == "chain" and args.action == "install"):
         _require_deps()
     sys.exit(args.func(args) or 0)
 

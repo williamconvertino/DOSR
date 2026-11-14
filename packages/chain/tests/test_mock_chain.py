@@ -106,3 +106,15 @@ def test_malformed_signature_is_rejected(chain):
     resp["signature"]["value"] = "0x" + "00" * 65
     with pytest.raises(ChainError, match="malformed|does not match"):
         chain.accept_transition(resp)
+
+
+def test_stale_parent_is_typed_and_events_carry_the_digest(chain):
+    from dosr_chain import StaleParentError
+    from dosr_protocol.eip712 import attestation_digest
+
+    first = response()
+    ev = chain.accept_transition(first)
+    assert ev["attestation_digest"] == attestation_digest(first["attestation"])
+    with pytest.raises(StaleParentError) as e:
+        chain.accept_transition(response(parent=GENESIS))
+    assert e.value.head == CANDIDATE

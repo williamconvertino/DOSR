@@ -12,6 +12,7 @@
     <div class="brand"><span class="logo">◆</span> DOSR <span class="muted small">client <span id="version"></span></span></div>
     <div class="topbar-right">
       <div id="attestor-pill" class="pill pill-unknown" title="Attestor status"><span class="dot"></span><span id="attestor-text">attestor…</span></div>
+      <button id="chain-pill" class="pill pill-unknown pill-btn" title="Blockchain: network, registered repositories, transactions"><span class="dot"></span><span id="chain-text">chain…</span></button>
       <button id="p2p-pill" class="pill pill-unknown pill-btn" title="P2P: IPFS status, peers, inbox, import"><span class="dot"></span><span id="p2p-text">P2P…</span><span id="inbox-count" class="count-badge" hidden></span></button>
       <button id="keys-btn" class="btn btn-small btn-ghost" title="Add or replace your model provider API keys">🔑 API keys</button>
       <label class="profile-select" title="Active client profile (who is committing/submitting)">
@@ -33,7 +34,7 @@
       <ul id="repo-list" class="repo-list"></ul>
       <div class="sidebar-foot muted small">
         <div class="foot-row"><span>Workspace</span><code id="workspace"></code></div>
-        <div class="foot-row"><span>Mock chain</span><code id="chain-path"></code></div>
+        <div class="foot-row"><span>Chain</span><code id="chain-path"></code></div>
       </div>
     </aside>
 
@@ -60,6 +61,7 @@
           <button data-tab="changes">Changes <span id="changes-count" class="count"></span></button>
           <button data-tab="submit">Submit PR</button>
           <button data-tab="history">History</button>
+          <button data-tab="chain">Chain <span id="chain-tab-badge" class="count"></span></button>
           <button data-tab="share">Share (P2P)</button>
           <button data-tab="config">Config</button>
         </nav>
@@ -118,7 +120,7 @@
                 <span id="model-hint" class="hint"></span>
               </label>
               <div class="checks">
-                <label class="inline"><input type="checkbox" id="opt-register" checked> Register approval on chain (mock)</label>
+                <label class="inline" title="Untick to keep the signed approval and land it later from the Chain tab (e.g. to race two approved PRs)"><input type="checkbox" id="opt-register" checked> Register approval on chain</label>
                 <label class="inline"><input type="checkbox" id="opt-dry"> Dry run (build + validate locally, send nothing)</label>
               </div>
               <fieldset class="demo-box">
@@ -159,6 +161,11 @@
           <div id="history-detail" class="card" hidden></div>
         </div>
 
+        <!-- Chain: this clone vs the canonical state on the chain -->
+        <div class="tab-panel" data-panel="chain" hidden>
+          <div id="repo-chain-view"></div>
+        </div>
+
         <!-- Share (P2P) -->
         <div class="tab-panel" data-panel="share" hidden>
           <div id="share-view"></div>
@@ -176,7 +183,7 @@
   <div id="modal" class="modal" hidden>
     <form class="modal-card" id="new-repo-form" onsubmit="createRepo(event)">
       <h2>New DOSR repository</h2>
-      <p class="muted small">Creates a git repo with an immutable review policy, makes the genesis commit, and registers it on the (mock) chain. The policy cannot be changed later — fork to change it.</p>
+      <p class="muted small">Creates a git repo with an immutable review policy, makes the genesis commit, and registers it on the chain. The policy cannot be changed later — fork to change it.</p>
       <div class="form-grid">
         <label>Name <input id="nr-name" required pattern="[A-Za-z0-9._-]+" placeholder="my-project"></label>
         <label>Seed project <select id="nr-seed"></select></label>
@@ -254,7 +261,7 @@
   <div id="p2p-modal" class="modal modal-top" hidden>
     <div class="modal-card modal-mid" role="dialog" aria-labelledby="p2p-title">
       <h2 id="p2p-title">P2P sharing</h2>
-      <p class="muted small">Repositories travel between devices over IPFS as a git bundle plus the signed attestation for every accepted PR. A <strong>share code</strong> (an IPFS CID) points at one published state. Importing it re-checks the bundle and every signature before your copy moves. (Dev stand-in for the chain: until the contract exists, share codes are passed by hand or through the peer inbox.)</p>
+      <p class="muted small">Repositories travel between devices over IPFS as a git bundle plus the signed attestation for every accepted PR. A <strong>share code</strong> (an IPFS CID) points at one published state. Importing it re-checks the bundle and every signature before your copy moves. On the EVM chain, the chain decides what is canonical and also records each repo's latest share code, so other devices can sync from the chain alone (<em>Chain</em> tab); the inbox is just a convenience.</p>
       <section class="p2p-section">
         <h3>Import a share code</h3>
         <form id="import-form" class="import-form" onsubmit="submitImport(event)">
@@ -282,6 +289,23 @@
       </section>
       <div class="modal-actions">
         <button type="button" class="btn btn-primary" onclick="closeP2P()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chain explorer -->
+  <div id="chain-modal" class="modal modal-top" hidden>
+    <div class="modal-card modal-wide" role="dialog" aria-labelledby="chain-title">
+      <div class="chain-head">
+        <h2 id="chain-title">Blockchain</h2>
+        <label class="inline small"><input type="checkbox" id="chain-live" checked> live (refresh every 2 s)</label>
+      </div>
+      <p class="muted small">The DOSRRegistry contract holds each repository's genesis, immutable policy hash, trusted attestor keys and <strong>canonical HEAD</strong>. It moves HEAD only for an approved attestation whose signature recovers to a registered attestor and whose parent is the current HEAD, so when two approved PRs race on the same parent the first one mined wins and the other reverts (<code>StaleParent</code>). Everyone reading this chain sees one history.</p>
+      <div id="chain-net"></div>
+      <section class="p2p-section"><h3>Repositories on the chain</h3><div id="chain-repos"></div></section>
+      <section class="p2p-section"><h3>Transactions <span class="muted small">newest first; every write to the DOSR contract</span></h3><div id="chain-activity"></div></section>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closeChain()">Done</button>
       </div>
     </div>
   </div>
