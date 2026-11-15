@@ -21,18 +21,29 @@ def price_of(pricing: dict, model: str) -> dict | None:
     return p
 
 
+def tier_multiplier(prompt_tokens: float, price: dict) -> float:
+    """Long-prompt pricing: some models bill every token of a call at a higher rate once
+    the prompt passes a threshold, e.g. Claude Haiku 5.5 (5x above 100K prompt tokens).
+    Pricing entry: "long_context": {"above_prompt_tokens": 100000, "multiplier": 5}."""
+    tier = price.get("long_context") or {}
+    above = tier.get("above_prompt_tokens")
+    return float(tier.get("multiplier", 1)) if above is not None and prompt_tokens > above else 1.0
+
+
 def cost_of(usage: dict | None, price: dict | None) -> float | None:
     if not usage or not price:
         return None
-    return (usage.get("prompt_tokens", 0) * price["input_per_mtok"]
-            + usage.get("completion_tokens", 0) * price["output_per_mtok"]) / 1_000_000
+    pt = usage.get("prompt_tokens", 0)
+    return tier_multiplier(pt, price) * (pt * price["input_per_mtok"]
+                                         + usage.get("completion_tokens", 0) * price["output_per_mtok"]) / 1_000_000
 
 
 def worst_case_call(prompt_est_tokens: int, price: dict) -> float:
     """Upper-ish bound for one call: estimated prompt + the full output allowance.
     The prompt side is the chars/4 estimate, so pad it."""
-    return (prompt_est_tokens * 1.5 * price["input_per_mtok"]
-            + MAX_OUTPUT_TOKENS * price["output_per_mtok"]) / 1_000_000
+    pt = prompt_est_tokens * 1.5
+    return tier_multiplier(pt, price) * (pt * price["input_per_mtok"]
+                                         + MAX_OUTPUT_TOKENS * price["output_per_mtok"]) / 1_000_000
 
 
 def summarize_spend(results_dir: Path, pricing: dict, since: str | None = None) -> list[dict]:

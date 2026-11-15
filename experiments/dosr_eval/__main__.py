@@ -181,6 +181,39 @@ def cmd_figures(args) -> int:
     return 0
 
 
+def cmd_overhead(args) -> int:
+    from .overhead import write_all
+
+    sizes = tuple(int(x) for x in args.sizes.split(","))
+    for path in write_all(args.out, sizes, args.reps):
+        print(path)
+    return 0
+
+
+def cmd_scaling(args) -> int:
+    import csv
+    import json
+
+    from .scaling import projection, write_all
+
+    rows = [row for path in args.results for row in load_rows(path)]
+    for path in write_all(rows, args.cases, args.out, EXPERIMENTS / ".cache" / "work", EXPERIMENTS / ".cache" / "git"):
+        print(path)
+    overhead_csv = args.overhead / "overhead.csv" if args.overhead else None
+    if overhead_csv and overhead_csv.is_file():
+        est = {}
+        with overhead_csv.open(newline="") as f:
+            for r in csv.DictReader(f):
+                est[int(r["lines"])] = int(r["prompt_est_tokens"])
+        summary = json.loads((args.out / "summary.json").read_text())
+        pricing = _pricing(args.pricing) or load_pricing(EXPERIMENTS / "pricing.example.json")
+        md, rows = projection(summary, est, pricing)
+        (args.out / "projection.md").write_text(md, encoding="utf-8")
+        (args.out / "projection.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        print(args.out / "projection.md")
+    return 0
+
+
 def cmd_report(args) -> int:
     text = report(_load(args.results, args.grades, args.exclude))
     if args.out:
@@ -279,6 +312,19 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, help="output directory (default: reports/figures/<first run>)")
     p.add_argument("--pricing", type=Path, help="default: pricing.json (for the currency label)")
     p.set_defaults(fn=cmd_figures)
+
+    p = sub.add_parser("overhead", help="DOSR's own latency vs change size (real client + attestor, mock model)")
+    p.add_argument("--sizes", default="10,30,100,300,1000,3000", help="lines changed, comma-separated")
+    p.add_argument("--reps", type=int, default=3)
+    p.add_argument("--out", type=Path, default=EXPERIMENTS / "reports" / "scaling")
+    p.set_defaults(fn=cmd_overhead)
+
+    p = sub.add_parser("scaling", help="latency and cost vs change size from finished runs (no model calls)")
+    p.add_argument("results", type=Path, nargs="+", help="results JSONL file(s)")
+    p.add_argument("--out", type=Path, default=EXPERIMENTS / "reports" / "scaling")
+    p.add_argument("--overhead", type=Path, help="directory with overhead.csv, to project larger changes")
+    p.add_argument("--pricing", type=Path, help="prices for the projection (default: pricing.json, else the example)")
+    p.set_defaults(fn=cmd_scaling)
 
     args = ap.parse_args(argv)
     load_dotenv()

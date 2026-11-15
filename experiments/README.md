@@ -301,3 +301,25 @@ C asks whether that friction can be cut without approving the misleading reverts
   so Claude sometimes writes invalid JSON (unescaped `\` or `"` from quoted code): about
   6% of Haiku 5.5 calls in final-v1, all counted as rejections, as the attestor would.
 - Calls run one at a time.
+
+## Latency and cost vs change size
+
+Two commands, no model calls:
+
+```bash
+PY -m dosr_eval overhead --out reports/scaling          # DOSR's own time per step, 10..3000-line changes
+PY -m dosr_eval --cases cases/final-v1 scaling reports/final-ac-x3/raw/*.jsonl \
+   --out reports/scaling --overhead reports/scaling     # join real calls with change size; project larger changes
+```
+
+- `overhead` runs the real client pipeline against the real attestor in-process (mock reviewer, mock chain)
+  on synthetic changes, and records each pipeline step plus the exact prompt size. Network, the model, a
+  real chain and IPFS are not included.
+- `scaling` measures each case's change from Git (lines, files, patch bytes, size of the changed files),
+  joins it to every call's latency, tokens and cost, and writes bucket tables, rank correlations, and
+  charts. With `--overhead`, it also projects latency and cost for larger changes: DOSR's exact prompt
+  size for that change, calibrated to billed tokens, at list price (including long-prompt tiers such as
+  Claude Haiku 5.5's 5x rate above 100K prompt tokens). Projections past the measured prompt range are
+  marked as extrapolated.
+
+Results for the final suite: `reports/scaling/` (`scaling.md`, `projection.md`, `overhead.md`, charts).

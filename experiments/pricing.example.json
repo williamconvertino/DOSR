@@ -1,7 +1,32 @@
 {
-  "_comment": "Copy to pricing.json (git-ignored). Prices per million tokens; keys must match the --model spec exactly. Cost columns stay empty, and --budget refuses to run, for paid models not listed here. GLM-4.6: Z.ai list price (docs.z.ai/guides/overview/pricing, checked 2026-10-23); the attestor calls open.bigmodel.cn, which bills in CNY and may differ, so confirm on your account's billing page. GLM-4-Plus is not on Z.ai's list: fill it in from bigmodel.cn before using --budget with it. OpenAI/Anthropic: fill in from each provider's pricing page.",
-  "zhipu/glm-4.6@api-v4": {"input_per_mtok": 0.6, "output_per_mtok": 2.2, "currency": "USD"},
-  "zhipu/glm-4-plus@api-v4": {"input_per_mtok": null, "output_per_mtok": null, "currency": "CNY"},
-  "openai/gpt-5@2025-08-07": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"},
-  "anthropic/<model>@latest": {"input_per_mtok": null, "output_per_mtok": null, "currency": "USD"}
+  "_comment": "Copy to pricing.json (git-ignored). Prices per million tokens; keys must match the --model spec exactly. Cost columns stay empty, and --budget refuses to run, for paid models not listed here. GLM-4.6: Z.ai list price (docs.z.ai/guides/overview/pricing, checked 2026-10-23); the attestor calls open.bigmodel.cn, which bills in CNY and may differ, so confirm on your account's billing page. GLM-4-Plus is not on Z.ai's list: fill it in from bigmodel.cn before using --budget with it. OpenAI/Anthropic: fill in from each provider's pricing page. Long-prompt tiers: add \"long_context\": {\"above_prompt_tokens\": N, \"multiplier\": M} (every token of a call billed M x once the prompt passes N). Haiku 5.5 and gpt-6-luna: $0.10/$0.50 list price per aggregator listings checked 2026-11-15; confirm on the providers' pricing pages.",
+  "zhipu/glm-4.6@api-v4": {
+    "input_per_mtok": 0.6,
+    "output_per_mtok": 2.2,
+    "currency": "USD"
+  },
+  "zhipu/glm-4-plus@api-v4": {
+    "input_per_mtok": null,
+    "output_per_mtok": null,
+    "currency": "CNY"
+  },
+  "openai/gpt-5@2025-08-07": {
+    "input_per_mtok": null,
+    "output_per_mtok": null,
+    "currency": "USD"
+  },
+  "openai/gpt-6-luna@latest": {
+    "input_per_mtok": 0.1,
+    "output_per_mtok": 0.5,
+    "currency": "USD"
+  },
+  "anthropic/claude-haiku-5-5@latest": {
+    "input_per_mtok": 0.1,
+    "output_per_mtok": 0.5,
+    "currency": "USD",
+    "long_context": {
+      "above_prompt_tokens": 100000,
+      "multiplier": 5
+    }
+  }
 }
