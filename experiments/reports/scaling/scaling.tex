@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llrrrrrr}
+\toprule
+Model & Lines changed & Calls & Latency med. (s) & p90 (s) & Prompt tok. & Output tok. & Cost (USD) \\
+\midrule
+claude-haiku-5-5 & 1--10 & 378 & 4.6 & 7.0 & 8,448 & 839 & 0.0017 \\
+ & 11--50 & 353 & 6.4 & 9.0 & 14,799 & 1,189 & 0.0029 \\
+\midrule
+gpt-6-luna & 1--10 & 378 & 4.2 & 8.0 & 5,401 & 266 & 0.0009 \\
+ & 11--50 & 353 & 5.3 & 9.7 & 9,215 & 379 & 0.0016 \\
+\bottomrule
+\end{tabular}
+\caption{Review latency and cost by the size of the change (lines added plus deleted). One call per row of the underlying runs; the contributor pays the cost.}
+\label{tab:scaling}
+\end{table}

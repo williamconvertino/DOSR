@@ -1,0 +1,110 @@
+[
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 10,
+    "prompt_tokens": 7150.654867256637,
+    "latency_s": 5.363361201356958,
+    "cost_usd": 0.0012225654867256638,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 30,
+    "prompt_tokens": 8303.610619469026,
+    "latency_s": 5.427039155706596,
+    "cost_usd": 0.0013378610619469028,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 100,
+    "prompt_tokens": 11762.477876106193,
+    "latency_s": 5.618073018755509,
+    "cost_usd": 0.0016837477876106193,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 300,
+    "prompt_tokens": 22120.778761061945,
+    "latency_s": 6.190163846722094,
+    "cost_usd": 0.002719577876106195,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 1000,
+    "prompt_tokens": 76920.2831858407,
+    "latency_s": 9.216750369620168,
+    "cost_usd": 0.008199528318584072,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "anthropic/claude-haiku-5-5@latest",
+    "lines": 3000,
+    "prompt_tokens": 229724.35398230088,
+    "latency_s": 17.656146786997468,
+    "cost_usd": 0.11739967699115045,
+    "long_prompt_rate": true,
+    "measured_range": false
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 10,
+    "prompt_tokens": 4555.615778688525,
+    "latency_s": 5.285035487888129,
+    "cost_usd": 0.0006170615778688525,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 30,
+    "prompt_tokens": 5290.153176229509,
+    "latency_s": 5.295571981397308,
+    "cost_usd": 0.0006905153176229509,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 100,
+    "prompt_tokens": 7493.76536885246,
+    "latency_s": 5.327181461924845,
+    "cost_usd": 0.0009108765368852459,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 300,
+    "prompt_tokens": 14092.94262295082,
+    "latency_s": 5.421842657578742,
+    "cost_usd": 0.0015707942622950823,
+    "long_prompt_rate": false,
+    "measured_range": true
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 1000,
+    "prompt_tokens": 49005.19774590164,
+    "latency_s": 5.922637784859185,
+    "cost_usd": 0.005062019774590164,
+    "long_prompt_rate": false,
+    "measured_range": false
+  },
+  {
+    "model": "openai/gpt-6-luna@latest",
+    "lines": 3000,
+    "prompt_tokens": 146355.25153688525,
+    "latency_s": 7.319065268770542,
+    "cost_usd": 0.014797025153688526,
+    "long_prompt_rate": false,
+    "measured_range": false
+  }
+]
